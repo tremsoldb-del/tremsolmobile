@@ -1,0 +1,2 @@
+/Users/ericegan/Desktop/FLUTTER/tremsolapp/android/app/.cxx/RelWithDebInfo/712q501q/arm64-v8a/CMakeFiles/edit_cache.dir
+/Users/ericegan/Desktop/FLUTTER/tremsolapp/android/app/.cxx/RelWithDebInfo/712q501q/arm64-v8a/CMakeFiles/rebuild_cache.dir

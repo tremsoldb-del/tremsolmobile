@@ -1,0 +1,98 @@
+{
+  "project_info": {
+    "project_number": "329989824825",
+    "project_id": "tremsol-app",
+    "storage_bucket": "tremsol-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:329989824825:android:a7735d96d8a3debc4e08e8",
+        "android_client_info": {
+          "package_name": "com.ezitraid.tremsol"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "329989824825-7ks0jj9d32f4rb1l20goh6u481kuiok5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ezitraid.tremsol",
+            "certificate_hash": "5bafa606f646c2cb37117a3520ddf6a080d18101"
+          }
+        },
+        {
+          "client_id": "329989824825-fsn49fal9sa1blc1e810p9obsvskj4sg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ezitraid.tremsol",
+            "certificate_hash": "673ac1415bfdfba3a47a3f9ae85c39bfd9df68f3"
+          }
+        },
+        {
+          "client_id": "329989824825-gasnb9e7vedg1g0pchjkm2b1eb235mmd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBq7F9OAwofpa9CtvGhyTgiUBbOcHsSG8E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "329989824825-gasnb9e7vedg1g0pchjkm2b1eb235mmd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "329989824825-jd914b7lsvamrncvtlk7gjev21q59lo6.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.ezitraid.tremsol"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:329989824825:android:5c2142b77ccfd5c74e08e8",
+        "android_client_info": {
+          "package_name": "com.ezitraid.tremsolapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "329989824825-gasnb9e7vedg1g0pchjkm2b1eb235mmd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBq7F9OAwofpa9CtvGhyTgiUBbOcHsSG8E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "329989824825-gasnb9e7vedg1g0pchjkm2b1eb235mmd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "329989824825-jd914b7lsvamrncvtlk7gjev21q59lo6.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.ezitraid.tremsol"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

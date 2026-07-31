@@ -1,0 +1,8 @@
+#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
+#include "Generated.xcconfig"
+
+
+CLANG_MODULE_CACHE_PATH=$(PROJECT_DIR)/ModuleCache.noindex
+SWIFT_MODULE_CACHE_PATH=$(PROJECT_DIR)/ModuleCache.noindex
+OTHER_CFLAGS=$(inherited) -fmodules-cache-path=$(PROJECT_DIR)/ModuleCache.noindex
+OTHER_SWIFT_FLAGS=$(inherited) -Xcc -fmodules-cache-path=$(PROJECT_DIR)/ModuleCache.noindex

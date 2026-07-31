@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "tremsol-app",
+  "private_key_id": "7e03cc5d604fc0f7c10c70a8b5a2fa02d3bfea46",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDg2rWikF06niTC\nD+VTOOKvclhg0n6NexzQksxl0ucvVzbf8pWWYIWDCw/FsaBpoppq1w7R9ur+/cf6\nrHRQilWKLMTyBUUkwwnEHvC8WPV2YhMHUTh2GV530/4JwHoCEBQL7nx4m7Jxq3GH\n5cy7UCc3opaFAyvPnj/7YLn0enUDm1Uk7x1TAqv9zpud0gAJj7/7WqDdaYH5cSAm\nnGs6SJ9Nt0ADoyKplkRnM8TcVPyxuLsrsIJuRo6PrGWT5ZoM1VjibuOAv5d/1jlA\nefRj1fCnctyMLanEdEXaaIW+L+rn5f+rYtUvMZPmsUb2UA/craSssAGy3TLSp+V+\nWxl7Wc3vAgMBAAECggEAEmBNb9e0htHd1y5NY5vGiughaOhLB20EUddtdPTjh+7s\nwSimKQACaU9CHroBjiCH1it1PpubYPOEoGvvpZVooD5AajccC4EVDz4oFnx+swoY\n3AQ7RQuVuN1OaaWdUwXVXZRD/+dZkgic4qpZLQXD7rwO6Rf1QKaCPB0PlXdckMq9\n1GaetpIvnx2ru+CDJU30KJDc/msiFveBSp/TbtKTfzDqrrcai+yIbs+F+LQpt2zX\ngAbf7aJ9GI7xj21Zv+DHRQVLbv6dtEMHG4+Y1C6jUDsrM1lbais8Z5M6qMQ4jsmC\nggAtzCKZH5uUwlPM54gYj39mqGTz5guPdP805h/owQKBgQD12Lb1XD3TakvmbgD0\nvbcJEJOqYUzL/ffX3UzYBMkC22LFZyAeXAmVme+SxZXXYGy/l5i7oOUxcjU3FxgV\nDW73nFFyx+0aF1KqLpoayCKLQDsiDE7bt4GW//PvMZQqYe3BWGAp52VmpiobumLo\nN0N8JyFJVBJkdIPCjFZ5hIw5mQKBgQDqJAxqoaXE0ll3W/gX0+thhu2zB6xEsu//\nV5izlZHasHI28tfX/nEigGk/pv29VM6deQWdrDB6/GNjVUdw3T9rITBYnlcj/HU/\n/FUHgPXDI5whC/vsqclDdntdMXcsBKDPE5lVnQxbCBgSSds4T7cC4JCHb6Kki6ts\n6IXG5xZIxwKBgQDmIeuCWsp1MTfDiI3UjBLepWnVQCfHfQGYTEw2mqQfzIX1C8gB\nI17Fb8fXuKW/az/hSWNrn/1r/+DYpQGiE2Ug3G9R5tyIY/S54c3X7CiJ+aJhCOx4\nuJrSYt5RtjNgSTNqnfPGxhkhscIRGrSjc7f0bBy4q75b0sXUQ9JfBjjNYQKBgQCX\nXbapONdx5orwHwTEYrxI0HHay5sSzptY98hAUPF575fm7hecC2IYa+ueutZPEASC\nyTpYNHkjCQc3sGn/DQlyuIIIyFSNbyhdtUNDFpvLC7pjotu6pAj5FB+sn83rJxLO\nzFzUfDMAprrpF9YhEWe+9G57IDCFL8YjIi9Z5wsBAQKBgGhVI+uM1E7hpZQSMcnQ\nW48EUrALgs/phepVM48LcnKG5JNJa1Y0mWZ/+mQ66rYOG7+MR4aA+R6vgGck0Z5h\nOlxvc++aAfZbhEk8mne63JrbIEUBh85infZEhzdu9s+ueWUcF5acJrS+JH/me/Cq\niaDKmeOf0w733+yCJuVg7jrJ\n-----END PRIVATE KEY-----\n",
+  "client_email": "tremsol-app@appspot.gserviceaccount.com",
+  "client_id": "110570908188676046325",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/tremsol-app%40appspot.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
