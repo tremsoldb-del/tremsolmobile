@@ -515,12 +515,54 @@ try {
   }
 }*/
 
+  Future<void> _openAdProduct(
+    BuildContext dialogContext,
+    String productId,
+  ) async {
+    // Close the advert before opening the product details page.
+    Navigator.of(dialogContext).pop();
+
+    // Allow the dialog route to finish closing before pushing a new route.
+    await Future<void>.delayed(Duration.zero);
+
+    if (!mounted) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ProductDetailsScreen(productId: productId),
+      ),
+    );
+  }
+
   void _showAdModal(Map<String, dynamic> ad) {
+    final String? productId = ad['productId']?.toString().trim();
+    final bool hasLinkedProduct =
+        productId != null && productId.isNotEmpty;
+
     showDialog(
       context: context,
       barrierDismissible: true,
       barrierColor: Colors.black.withOpacity(0.72),
-      builder: (context) {
+      builder: (dialogContext) {
+        final double advertHeight =
+            MediaQuery.of(dialogContext).size.height * 0.52;
+
+        final Widget advertImage = ad['image'] != null
+            ? CachedNetworkImage(
+                imageUrl: ad['image'].toString(),
+                fit: BoxFit.contain,
+                width: double.infinity,
+                height: advertHeight,
+                placeholder: (context, url) =>
+                    _premiumLoader(height: advertHeight),
+                errorWidget: (context, url, error) =>
+                    _networkImageFallback(iconSize: 50),
+              )
+            : SizedBox(
+                height: advertHeight,
+                child: _networkImageFallback(iconSize: 50),
+              );
+
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(horizontal: 24),
           backgroundColor: Colors.transparent,
@@ -544,19 +586,20 @@ try {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
-                  child: ad['image'] != null
-                      ? CachedNetworkImage(
-                          imageUrl: ad['image'],
-                          fit: BoxFit.contain,
-                          width: double.infinity,
-                          height: MediaQuery.of(context).size.height * 0.52,
-                          placeholder: (context, url) => _premiumLoader(
-                            height: MediaQuery.of(context).size.height * 0.52,
-                          ),
-                          errorWidget: (context, url, error) =>
-                              _networkImageFallback(iconSize: 50),
-                        )
-                      : _networkImageFallback(iconSize: 50),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      // An advert without productId remains a normal,
+                      // non-clickable image.
+                      onTap: hasLinkedProduct
+                          ? () => _openAdProduct(
+                                dialogContext,
+                                productId!,
+                              )
+                          : null,
+                      child: advertImage,
+                    ),
+                  ),
                 ),
               ),
               Positioned(
@@ -567,13 +610,16 @@ try {
                   shape: const CircleBorder(),
                   elevation: 8,
                   child: InkWell(
-                    onTap: () => Navigator.of(context).pop(),
+                    onTap: () => Navigator.of(dialogContext).pop(),
                     customBorder: const CircleBorder(),
                     child: const SizedBox(
                       width: 42,
                       height: 42,
-                      child: Icon(Icons.close_rounded,
-                          color: Colors.white, size: 22),
+                      child: Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
                   ),
                 ),
