@@ -15,6 +15,7 @@ import 'COD/success_screen.dart';
 
 class PaymentOptionsPage extends StatefulWidget {
   final String region;
+  final String shippingCountry;
   final double totalAmount;
   final double shippingFee;
   final String orderNotes;
@@ -23,6 +24,7 @@ class PaymentOptionsPage extends StatefulWidget {
   const PaymentOptionsPage({
     super.key,
     required this.region,
+    required this.shippingCountry,
     required this.totalAmount,
     required this.shippingFee,
     required this.orderNotes,
@@ -124,6 +126,16 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
         .where((value) => value.isNotEmpty)
         .toList();
 
+    final configuredRegionKeys =
+        (allowedData['regionKeys'] as List<dynamic>? ?? const [])
+            .map((value) => _normalizeRegionKey(value.toString()))
+            .where((value) => value.isNotEmpty);
+
+    final allowedRegionKeys = <String>{
+      ...regions.map(_normalizeRegionKey),
+      ...configuredRegionKeys,
+    };
+
     final failureCount = _readInt(
       userData['codFailureCount'] ??
           userData['deliveryFailureCount'] ??
@@ -147,6 +159,38 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
       ),
     );
 
+    final savedAddressRegion =
+        (addressData['region'] ?? '').toString().trim();
+    final passedRegion = widget.region.trim();
+    final savedAddressRegionKey =
+        (addressData['regionKey'] ?? '').toString().trim();
+
+    // The visible region name is the source of truth. A previously stored
+    // regionKey can become stale when an address is corrected in Firestore or
+    // migrated from an older region list. Only use regionKey as a fallback
+    // when no region name is available.
+    final currentRegionKeys = <String>{
+      if (savedAddressRegion.isNotEmpty)
+        _normalizeRegionKey(savedAddressRegion),
+      if (passedRegion.isNotEmpty) _normalizeRegionKey(passedRegion),
+    }..removeWhere((key) => key.isEmpty);
+
+    if (currentRegionKeys.isEmpty && savedAddressRegionKey.isNotEmpty) {
+      currentRegionKeys.add(_normalizeRegionKey(savedAddressRegionKey));
+    }
+
+    final currentRegionLabel = savedAddressRegion.isNotEmpty
+        ? savedAddressRegion
+        : (passedRegion.isNotEmpty ? passedRegion : 'your region');
+
+    debugPrint(
+      '[PaymentOptions] currentRegionLabel=$currentRegionLabel '
+      'currentRegionKeys=$currentRegionKeys '
+      'allowedRegionKeys=$allowedRegionKeys '
+      'protectedCodEnabled=${policy.enabled} '
+      'codEligible=${policy.isEligible}',
+    );
+
     final addressPhone = (addressData['phone'] ?? '').toString().trim();
     final userPhone = (userData['phone'] ?? '').toString().trim();
     final codDeliveryPhone =
@@ -160,7 +204,9 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
             : (authPhone.isNotEmpty ? authPhone : userPhone));
 
     return _PaymentConfiguration(
-      allowedRegions: regions,
+      allowedRegionKeys: allowedRegionKeys,
+      currentRegionKeys: currentRegionKeys,
+      currentRegionLabel: currentRegionLabel,
       policy: policy,
       initialPhone: initialPhone,
     );
@@ -183,6 +229,14 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
     if (normalized == 'true') return true;
     if (normalized == 'false') return false;
     return fallback;
+  }
+
+  static String _normalizeRegionKey(String value) {
+    return value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceFirst(RegExp(r'\s+region$'), '');
   }
 
   void _onPaymentMethodSelected(String method) {
@@ -708,14 +762,17 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
         .get();
     final userData = userDoc.data() ?? <String, dynamic>{};
 
-    var shippingCountry = (userData['country'] ?? '').toString().trim();
-    var shippingRegion = (userData['region'] ?? '').toString().trim();
+    var shippingCountry = widget.shippingCountry.trim();
+    var shippingRegion = widget.region.trim();
+
     if ((shippingCountry.isEmpty || shippingRegion.isEmpty) &&
         widget.shippingAddress.trim().isNotEmpty) {
       final parsed = _parseCountryRegionFromAddress(widget.shippingAddress);
       if (shippingRegion.isEmpty) shippingRegion = parsed.$1;
       if (shippingCountry.isEmpty) shippingCountry = parsed.$2;
     }
+
+    final shippingRegionKey = _normalizeRegionKey(shippingRegion);
 
     final orderRef = await FirebaseFirestore.instance
         .collection('ordersitems')
@@ -731,6 +788,9 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
       'shippingAddress': widget.shippingAddress,
       'shippingCountry': shippingCountry,
       'shippingRegion': shippingRegion,
+      'shippingRegionKey': shippingRegionKey,
+      'shippingFeeSource': 'settings/regionalShippingFees',
+      'shippingFeeCurrency': 'GHS',
       'timestamp': FieldValue.serverTimestamp(),
       'type': 'mobile',
       'paid': paid,
@@ -1005,6 +1065,7 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
+
           if (snapshot.hasError || !snapshot.hasData) {
             return Center(
               child: Padding(
@@ -1020,9 +1081,9 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
           }
 
           final configuration = snapshot.data!;
-          final regionEligible = configuration.allowedRegions
-              .map((region) => region.toLowerCase())
-              .contains(widget.region.trim().toLowerCase());
+          final regionEligible = configuration.currentRegionKeys.any(
+            configuration.allowedRegionKeys.contains,
+          );
           final isCodAllowed = regionEligible &&
               configuration.policy.enabled &&
               configuration.policy.isEligible;
@@ -1038,117 +1099,155 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
           final amountDueOnDelivery =
               math.max(0.0, _baseTotal - commitmentAmount).toDouble();
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
+          return SafeArea(
+            top: false,
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFEFEF),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Text(
-                    'Choose your payment method',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF002A5C),
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                if (isCodAllowed) ...[
-                  PaymentOptionCard(
-                    icon: Icons.verified_user_outlined,
-                    title: 'Protected Cash on Delivery',
-                    description: configuration.policy.isEscalated
-                        ? 'Pay a ${configuration.policy.escalatedDepositPercent.toStringAsFixed(0)}% commitment deposit now and the balance on delivery.'
-                        : 'Pay the delivery fee now and the item balance on delivery.',
-                    isSelected: effectiveSelection == 'Protected COD',
-                    onTap: () => _onPaymentMethodSelected('Protected COD'),
-                  ),
-                  const SizedBox(height: 16),
-                ] else if (regionEligible &&
-                    !configuration.policy.isEligible) ...[
-                  _CodUnavailableCard(
-                    message:
-                        'Cash on Delivery is suspended for this account because of previous failed deliveries. Please use Paystack.',
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                PaymentOptionCard(
-                  icon: Icons.payment,
-                  title: 'Paystack',
-                  description: 'Pay the complete order amount securely online.',
-                  isSelected: effectiveSelection == 'Paystack',
-                  onTap: () => _onPaymentMethodSelected('Paystack'),
-                ),
-                const SizedBox(height: 18),
-                if (effectiveSelection == 'Protected COD') ...[
-                  _ProtectedCodSummary(
-                    currency: currencySymbol ?? 'GHS',
-                    commitmentAmount:
-                        _displayAmount(commitmentAmount),
-                    dueOnDelivery: _displayAmount(amountDueOnDelivery),
-                    deliveryPhone: configuration.initialPhone.trim().isEmpty
-                        ? ''
-                        : _normalizePhone(configuration.initialPhone),
-                    warningText: configuration.policy.warningMessage,
-                  ),
-                  const SizedBox(height: 12),
-                  CheckboxListTile(
-                    value: _acceptCodTerms,
-                    onChanged: _isProcessing
-                        ? null
-                        : (value) {
-                            setState(() => _acceptCodTerms = value ?? false);
-                          },
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text(
-                      'I understand that the commitment payment confirms my '
-                      'order, the remaining balance is due on delivery, and '
-                      'failed or rejected deliveries may affect future COD access.',
-                      style: TextStyle(fontSize: 13.5),
-                    ),
-                  ),
-                ] else if (_currencyLoaded) ...[
-                  _FullPaymentSummary(
-                    currency: currencySymbol ?? 'GHS',
-                    displayTotal: _displayAmount(_baseTotal),
-                    baseTotal: _baseTotal,
-                  ),
-                ],
-                const SizedBox(height: 28),
-                _isProcessing
-                    ? const Center(child: CircularProgressIndicator())
-                    : ElevatedButton(
-                        onPressed: () => _handleProceed(
-                          effectiveSelection,
-                          configuration,
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(52),
-                          backgroundColor: const Color(0xFF002A5C),
-                          shape: RoundedRectangleBorder(
+                Expanded(
+                  child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFEFEF),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                        ),
-                        child: Text(
-                          effectiveSelection == 'Protected COD'
-                              ? 'Pay commitment & confirm order'
-                              : (effectiveSelection == 'Paystack'
-                                  ? 'Pay full amount'
-                                  : 'Continue'),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            color: Colors.white,
+                          child: const Text(
+                            'Choose your payment method',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF002A5C),
+                            ),
+                            textAlign: TextAlign.center,
                           ),
                         ),
+                        const SizedBox(height: 20),
+                        if (isCodAllowed) ...[
+                          PaymentOptionCard(
+                            icon: Icons.verified_user_outlined,
+                            title: 'Protected Cash on Delivery',
+                            description: configuration.policy.isEscalated
+                                ? 'Pay a ${configuration.policy.escalatedDepositPercent.toStringAsFixed(0)}% commitment deposit now and the balance on delivery.'
+                                : 'Pay the regional delivery fee now and the item balance on delivery.',
+                            isSelected:
+                                effectiveSelection == 'Protected COD',
+                            onTap: () =>
+                                _onPaymentMethodSelected('Protected COD'),
+                          ),
+                          const SizedBox(height: 16),
+                        ] else ...[
+                          _CodUnavailableCard(
+                            message: !regionEligible
+                                ? 'Cash on Delivery is not currently enabled for '
+                                    '${configuration.currentRegionLabel}. Please use Paystack.'
+                                : (!configuration.policy.enabled
+                                    ? 'Protected Cash on Delivery is temporarily disabled. '
+                                        'Please use Paystack.'
+                                    : 'Cash on Delivery is suspended for this account '
+                                        'because of previous failed deliveries. Please '
+                                        'use Paystack.'),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+                        PaymentOptionCard(
+                          icon: Icons.payment,
+                          title: 'Paystack',
+                          description:
+                              'Pay the complete order amount securely online.',
+                          isSelected: effectiveSelection == 'Paystack',
+                          onTap: () =>
+                              _onPaymentMethodSelected('Paystack'),
+                        ),
+                        const SizedBox(height: 18),
+                        if (effectiveSelection == 'Protected COD') ...[
+                          _ProtectedCodSummary(
+                            currency: currencySymbol ?? 'GHS',
+                            commitmentAmount:
+                                _displayAmount(commitmentAmount),
+                            dueOnDelivery:
+                                _displayAmount(amountDueOnDelivery),
+                            totalAmount: _displayAmount(_baseTotal),
+                            deliveryPhone:
+                                configuration.initialPhone.trim().isEmpty
+                                    ? ''
+                                    : _normalizePhone(
+                                        configuration.initialPhone,
+                                      ),
+                            warningText:
+                                configuration.policy.warningMessage,
+                          ),
+                          const SizedBox(height: 12),
+                          _CodTermsAgreement(
+                            value: _acceptCodTerms,
+                            enabled: !_isProcessing,
+                            onChanged: (value) {
+                              setState(() {
+                                _acceptCodTerms = value;
+                              });
+                            },
+                          ),
+                        ] else if (_currencyLoaded) ...[
+                          _FullPaymentSummary(
+                            currency: currencySymbol ?? 'GHS',
+                            displayTotal: _displayAmount(_baseTotal),
+                            baseTotal: _baseTotal,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    boxShadow: const [
+                      BoxShadow(
+                        blurRadius: 8,
+                        offset: Offset(0, -2),
+                        color: Color(0x1A000000),
                       ),
+                    ],
+                  ),
+                  child: _isProcessing
+                      ? const SizedBox(
+                          height: 52,
+                          child: Center(
+                            child: CircularProgressIndicator(),
+                          ),
+                        )
+                      : ElevatedButton(
+                          onPressed: () => _handleProceed(
+                            effectiveSelection,
+                            configuration,
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(52),
+                            backgroundColor: const Color(0xFF002A5C),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: Text(
+                            effectiveSelection == 'Protected COD'
+                                ? 'Pay commitment & confirm order'
+                                : (effectiveSelection == 'Paystack'
+                                    ? 'Pay full amount'
+                                    : 'Continue'),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                ),
               ],
             ),
           );
@@ -1159,12 +1258,16 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
 }
 
 class _PaymentConfiguration {
-  final List<String> allowedRegions;
+  final Set<String> allowedRegionKeys;
+  final Set<String> currentRegionKeys;
+  final String currentRegionLabel;
   final _ProtectedCodPolicy policy;
   final String initialPhone;
 
   const _PaymentConfiguration({
-    required this.allowedRegions,
+    required this.allowedRegionKeys,
+    required this.currentRegionKeys,
+    required this.currentRegionLabel,
     required this.policy,
     required this.initialPhone,
   });
@@ -1321,6 +1424,7 @@ class _ProtectedCodSummary extends StatelessWidget {
   final String currency;
   final double commitmentAmount;
   final double dueOnDelivery;
+  final double totalAmount;
   final String deliveryPhone;
   final String? warningText;
 
@@ -1328,6 +1432,7 @@ class _ProtectedCodSummary extends StatelessWidget {
     required this.currency,
     required this.commitmentAmount,
     required this.dueOnDelivery,
+    required this.totalAmount,
     required this.deliveryPhone,
     required this.warningText,
   });
@@ -1368,6 +1473,11 @@ class _ProtectedCodSummary extends StatelessWidget {
           _AmountRow(
             label: 'Pay on delivery',
             value: '$currency ${dueOnDelivery.toStringAsFixed(2)}',
+          ),
+          const SizedBox(height: 7),
+          _AmountRow(
+            label: 'Total order amount',
+            value: '$currency ${totalAmount.toStringAsFixed(2)}',
           ),
           const Divider(height: 24),
           Row(
@@ -1420,6 +1530,118 @@ class _ProtectedCodSummary extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+
+class _CodTermsAgreement extends StatelessWidget {
+  final bool value;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  const _CodTermsAgreement({
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFFF9F7FB),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: enabled ? () => onChanged(!value) : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(10, 14, 14, 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE1DCE7)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Checkbox(
+                  value: value,
+                  onChanged: enabled
+                      ? (checked) => onChanged(checked ?? false)
+                      : null,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'By placing your order, you agree that:',
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        height: 1.4,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF24232A),
+                      ),
+                    ),
+                    SizedBox(height: 10),
+                    _AgreementBullet(
+                      text: 'Your commitment fee confirms your order.',
+                    ),
+                    SizedBox(height: 6),
+                    _AgreementBullet(
+                      text: 'You will pay the remaining balance upon delivery.',
+                    ),
+                    SizedBox(height: 6),
+                    _AgreementBullet(
+                      text:
+                          'Cash on Delivery (COD) privileges may be restricted only if you refuse or reject a correctly delivered order.',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgreementBullet extends StatelessWidget {
+  final String text;
+
+  const _AgreementBullet({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 7),
+          child: Icon(
+            Icons.circle,
+            size: 5,
+            color: Color(0xFF5E5768),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(
+              fontSize: 13.5,
+              height: 1.45,
+              color: Color(0xFF3D3942),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

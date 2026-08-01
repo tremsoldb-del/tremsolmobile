@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -10,7 +11,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:tremsolapp/auth/auth_gate.dart';
 import 'package:tremsolapp/custom_ad/ad_widget.dart';
 import 'package:tremsolapp/internet_connect/app_shell.dart';
 import 'package:tremsolapp/services/presence_service.dart.dart';
@@ -22,6 +22,7 @@ import 'auth/google_signin.dart';
 import 'auth/signin_screen.dart';
 import 'firebase_options.dart';
 import 'homescreen.dart';
+import 'auth/auth_gate.dart';
 
 // --------------------- Globals ---------------------
 
@@ -49,14 +50,9 @@ Future<void> main() async {
     version: 'v18.0',
   );
 
-  // A OneSignal configuration problem should not prevent the app from opening.
-  try {
-    await _initOneSignal();
-  } catch (error, stackTrace) {
-    debugPrint('[OneSignal] Initialization failed: $error');
-    debugPrintStack(stackTrace: stackTrace);
-  }
-
+  // Draw the first Flutter frame as soon as Firebase is ready. The native
+  // launch screen remains visible until this point, so there is no second
+  // Flutter splash page.
   runApp(
     MultiProvider(
       providers: [
@@ -67,6 +63,21 @@ Future<void> main() async {
       child: const MyApp(),
     ),
   );
+
+  // OneSignal is non-critical for the first frame. Initializing it after the
+  // app is visible shortens the native launch-screen duration.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(_initializeDeferredServices());
+  });
+}
+
+Future<void> _initializeDeferredServices() async {
+  try {
+    await _initOneSignal();
+  } catch (error, stackTrace) {
+    debugPrint('[OneSignal] Initialization failed: $error');
+    debugPrintStack(stackTrace: stackTrace);
+  }
 }
 
 /// Initializes OneSignal and wires notification listeners.

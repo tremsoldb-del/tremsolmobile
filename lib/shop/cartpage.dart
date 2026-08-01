@@ -1,13 +1,15 @@
+import 'dart:math' as math;
+
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tremsolapp/shop/wishlist.page.dart';
 
 import '../homescreen.dart';
 import 'checkoutpage.dart';
+import 'wishlist.page.dart';
 
 class CartPage extends StatefulWidget {
   const CartPage({super.key});
@@ -17,1230 +19,1428 @@ class CartPage extends StatefulWidget {
 }
 
 class _CartPageState extends State<CartPage> {
-  String? currencySymbol;
-  double? exchangeRate;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-//added 22 01 2025 for PROMO CODE
+  static const Color _navy = Color(0xFF002A5C);
+  static const Color _orange = Color(0xFFFFA500);
 
- String? userId; // Global variable to store the Firebase UID
- 
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final TextEditingController _promoCodeController = TextEditingController();
+
+  String currencySymbol = 'GHS';
+  double exchangeRate = 1.0;
+  bool _currencyLoaded = false;
+
+  String? _appliedPromoCode;
+  DocumentReference<Map<String, dynamic>>? _appliedPromoReference;
+  double _discountAmount = 0.0;
+  bool _isPromoApplied = false;
+  bool _isApplyingPromo = false;
+
+  String _productLookupSignature = '';
+  Future<Map<String, _CartProductState>>? _productLookupFuture;
 
   @override
   void initState() {
     super.initState();
-
     _loadCurrencyData();
-
-    initializeUserId();
-    _loadWishlistCount();
-
-
-//added 16 03 2025
- /* final FirebaseAuth auth = FirebaseAuth.instance;
-    final User? currentUser = auth.currentUser;
-
-    if (currentUser != null) {
-      userId = currentUser.uid;
-    } else {
-      userId = '';
-    }*/
-
-
-
   }
 
-
-
-  Future<void> initializeUserId() async {
-    try {
-      final User? currentUser = FirebaseAuth.instance.currentUser;
-      userId = currentUser?.uid; // Assign the UID to the global variable
-      if (userId != null) {
-        print('User ID successfully retrieved: $userId');
-      } else {
-        print('No user is signed in.');
-      }
-    } catch (e) {
-      print('Error retrieving user ID: $e');
-    }
+  @override
+  void dispose() {
+    _promoCodeController.dispose();
+    super.dispose();
   }
 
-  int wishlistCount = 0;
-//added 05-01-2025
-  Future<void> _loadWishlistCount() async {
-    try {
-      final products =
-          await FirebaseFirestore.instance.collection('products').get();
+  Future<void> _loadCurrencyData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final base = prefs.getString('baseCurrency') ?? 'GHS';
+    final selected = prefs.getString('selectedCurrency') ?? base;
+    final rate = prefs.getDouble('conversionRate') ?? 1.0;
 
-      setState(() {
-        wishlistCount = products.docs.where((doc) {
-          final likes = List<String>.from(doc['likes'] ?? []);
-          return likes
-              .contains(userId); // Check if user's UID is in the likes array
-        }).length;
-      });
-    } catch (e) {
-      print("Error loading wishlist count: $e");
-    }
+    if (!mounted) return;
+    setState(() {
+      currencySymbol = selected;
+      exchangeRate = rate;
+      _currencyLoaded = true;
+    });
   }
 
+  double _convertPrice(num value) => value.toDouble() * exchangeRate;
 
-    //added 13-04-2025
-  String _capitalizeFirstLetter(String input) {
-    if (input.isEmpty) return ''; // Handle empty string case
+  String _formatAmount(num amount) {
+    return NumberFormat('#,##0.00').format(_convertPrice(amount));
+  }
 
-    return input
-        .split(' ')
-        .where((word) => word.isNotEmpty) // Ensure empty words are removed
-        .map((word) => word[0].toUpperCase() + word.substring(1))
+  String _capitalizeWords(String value) {
+    return value
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .map(
+          (word) => word.length == 1
+              ? word.toUpperCase()
+              : '${word[0].toUpperCase()}${word.substring(1)}',
+        )
         .join(' ');
   }
 
-
- void _toggleLikeStatus(BuildContext context, String productId, bool isLiked, Function updateUI) async {
-  // Get the current user
-  final User? currentUser = FirebaseAuth.instance.currentUser;
-
-  if (currentUser == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('You need to log in to update your wishlist.'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-    return;
-  }
-
-  final action = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text(isLiked ? 'Remove from Wishlist' : 'Add to Wishlist'),
-      content: Text(isLiked
-          ? 'Are you sure you want to remove this product from your wishlist?'
-          : 'Do you want to add this product to your wishlist?'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false), // Dismiss dialog
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, true), // Confirm action
-          child: const Text('Confirm'),
-        ),
-      ],
-    ),
-  );
-
-  if (action == true) {
-    final userId = currentUser.uid;
+  Color? _parseSelectedColor(dynamic rawValue) {
+    final raw = rawValue?.toString().trim() ?? '';
+    if (raw.isEmpty) return null;
 
     try {
-      if (isLiked) {
-        await FirebaseFirestore.instance.collection('products').doc(productId).update({
-          'likes': FieldValue.arrayRemove([userId]),
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Product removed from your wishlist.'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      } else {
-        await FirebaseFirestore.instance.collection('products').doc(productId).update({
-          'likes': FieldValue.arrayUnion([userId]),
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Product added to your wishlist.'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-        updateUI(); // Hide like button instantly
+      final normalized = raw
+          .replaceFirst('#', '')
+          .replaceFirst('0x', '')
+          .replaceFirst('0X', '');
+      final hex = normalized.length == 6 ? 'FF$normalized' : normalized;
+      if (hex.length != 8) return null;
+      return Color(int.parse(hex, radix: 16));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, _CartProductState>> _productLookupFor(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> cartDocs,
+  ) {
+    final ids = cartDocs
+        .map((doc) => (doc.data()['productId'] ?? '').toString().trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+
+    final signature = ids.join('|');
+    if (_productLookupFuture == null || signature != _productLookupSignature) {
+      _productLookupSignature = signature;
+      _productLookupFuture = _loadProductStates(ids);
+    }
+
+    return _productLookupFuture!;
+  }
+
+  Future<Map<String, _CartProductState>> _loadProductStates(
+    List<String> productIds,
+  ) async {
+    if (productIds.isEmpty) return <String, _CartProductState>{};
+
+    final result = <String, _CartProductState>{};
+
+    // Load products in small Firestore batches so the cart waits once instead
+    // of showing a separate spinner for every item.
+    const batchSize = 10;
+    for (var start = 0; start < productIds.length; start += batchSize) {
+      final end = math.min(start + batchSize, productIds.length);
+      final batchIds = productIds.sublist(start, end);
+
+      final snapshot = await _firestore
+          .collection('products')
+          .where(FieldPath.documentId, whereIn: batchIds)
+          .get();
+
+      for (final document in snapshot.docs) {
+        result[document.id] = _CartProductState.fromDocument(document);
       }
-    } catch (error) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('An error occurred: $error'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+
+      for (final productId in batchIds) {
+        result.putIfAbsent(
+          productId,
+          () => const _CartProductState.missing(),
+        );
+      }
     }
+
+    return result;
   }
-}
-
-
-//added 9 12 2025
-Future<List<String>> _getUnavailableProductIds(
-    List<QueryDocumentSnapshot> cartDocs) async {
-  final List<String> unavailable = [];
-
-  for (final cartDoc in cartDocs) {
-    final data = cartDoc.data() as Map<String, dynamic>;
-    final String productId = data['productId'];
-
-    final productSnap = await FirebaseFirestore.instance
-        .collection('products')
-        .doc(productId)
-        .get();
-
-    if (!productSnap.exists) {
-      unavailable.add(productId);
-      continue;
-    }
-
-    final productData = productSnap.data() as Map<String, dynamic>;
-    final bool isPublished = productData['isPublish'] ?? true;
-
-    if (!isPublished) {
-      unavailable.add(productId);
-    }
-  }
-
-  return unavailable;
-}
-
-
-Widget _buildCartItem(QueryDocumentSnapshot cartItem, BuildContext context) {
-  final data = cartItem.data() as Map<String, dynamic>;
-  final double originalPrice = (data['totalPrice'] ?? 0.0).toDouble();
-  final double convertedPrice = _convertPrice(originalPrice);
-  final int quantity = data['quantity'] ?? 1;
-  final String productId = data['productId'];
-
-  Color? color;
-  if (data['selectedColor'] != null && data['selectedColor'].isNotEmpty) {
-    color = Color(int.parse(data['selectedColor'].substring(1), radix: 16))
-        .withOpacity(1.0);
-  }
-
- return FutureBuilder<DocumentSnapshot>(
-  future: FirebaseFirestore.instance.collection('products').doc(productId).get(),
-  builder: (context, snapshot) {
-    if (!snapshot.hasData) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    final bool productExists = snapshot.data!.exists;
-    final productData = productExists
-        ? (snapshot.data!.data() as Map<String, dynamic>)
-        : <String, dynamic>{};
-
-    final bool isPublished = productData['isPublish'] ?? true;
-    final bool isUnavailable = !productExists || !isPublished;
-
-    bool isLiked = productExists &&
-        productData['likes'] != null &&
-        (productData['likes'] as List<dynamic>).contains(userId);
-
-
-      return StatefulBuilder(
-  builder: (context, setState) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 2.0),
-      child: Opacity(
-        opacity: isUnavailable ? 0.5 : 1.0, // fade unavailable items
-        child: Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 0),
-                    leading: 
-                    CachedNetworkImage(
-  imageUrl: data['productImage'],
-   width: MediaQuery.of(context).size.width * 0.15,
-                      height: MediaQuery.of(context).size.height * 0.08,
-  fit: BoxFit.cover,
-  placeholder: (context, url) => const SizedBox(
-    width: 60,
-    height: 60,
-    child: Center(
-      child: Icon(Icons.shopping_cart_outlined, size: 28, color: Colors.grey),
-    ),
-  ),
-  errorWidget: (context, url, error) => const Icon(Icons.broken_image, size: 28),
-),
-
-                    
-                 /*
-                    Image.network(
-                      data['productImage'],
-                      fit: BoxFit.cover,
-                      width: MediaQuery.of(context).size.width * 0.15,
-                      height: MediaQuery.of(context).size.height * 0.08,
-                    ),
-*/
-                    title: Text(
-                      _capitalizeFirstLetter(data['productName']),
-                      style: const TextStyle(fontSize: 14),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-             subtitle: Column(
-  crossAxisAlignment: CrossAxisAlignment.start,
-  children: [
-    if (isUnavailable)
-      const Text(
-        'This product is no longer available',
-        style: TextStyle(
-          fontSize: 12,
-          color: Colors.red,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    if (!isUnavailable) // Only show description if still available
-      Text(
-        data['productDescription'] ?? '',
-        style: const TextStyle(fontSize: 12),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-    if (color != null)
-      Row(
-        children: [
-          const Text('Color: ', style: TextStyle(fontSize: 12)),
-          Container(
-            width: 16,
-            height: 16,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
-          ),
-        ],
-      ),
-    if (data['selectedSize'] != null && data['selectedSize'].isNotEmpty)
-      Text('Size: ${data['selectedSize']}', style: const TextStyle(fontSize: 12)),
-  ],
-),
-
-             trailing: Row(
-  mainAxisSize: MainAxisSize.min,
-  children: [
-    if (!isUnavailable && !isLiked) // only when available & not yet liked
-      IconButton(
-        icon: const Icon(Icons.favorite_border, color: Colors.black),
-        onPressed: () {
-          _toggleLikeStatus(context, productId, isLiked, () {
-            setState(() => isLiked = true); // Hide button instantly
-          });
-        },
-      ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.grey, size: 18),
-                          onPressed: () {
-                            showDialog(
-                              context: context,
-                              builder: (BuildContext context) {
-                                return AlertDialog(
-                                  title: const Text("Remove Item"),
-                                  content: const Text("Are you sure you want to remove this item from the cart?"),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.of(context).pop(),
-                                      child: const Text("Cancel"),
-                                    ),
-                                    TextButton(
-                                      onPressed: () {
-                                        _deleteCartItem(cartItem.id);
-                                        Navigator.of(context).pop();
-                                      },
-                                      child: const Text("Remove"),
-                                    ),
-                                  ],
-                                );
-                              },
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-               Row(
-  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-  children: [
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '$currencySymbol ${NumberFormat("#,##0.00").format(convertedPrice)}',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-        ),
-        if (isUnavailable)
-          const Text(
-            'Unavailable',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.red,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-      ],
-    ),
-    Row(
-      children: [
-        IconButton(
-          icon: const Icon(Icons.remove),
-          onPressed: isUnavailable
-              ? null
-              : () async {
-                  final minQuantity = await _getProductMinQuantity(productId);
-                  if (quantity > minQuantity && quantity > 1) {
-                    _updateQuantity(cartItem.id, quantity - 1);
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Cannot decrease quantity below the minimum of $minQuantity'),
-                        duration: const Duration(seconds: 2),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  }
-                },
-        ),
-        Text(quantity.toString()),
-        IconButton(
-          icon: const Icon(Icons.add),
-          onPressed: isUnavailable
-              ? null
-              : () {
-                  _updateQuantity(cartItem.id, quantity + 1);
-                },
-        ),
-      ],
-    ),
-  ],
-),
-
-                ],
-              ),
-            ),
-     ) );
-        },
-      );
-    },
-  );
-}
-
-
-
-  //added 23 01 2025
-  String? _appliedPromoCode; // Tracks the applied promo code
-  double _discountAmount = 0.0; // Tracks the discount value
-  bool _isPromoApplied =
-      false; // Flag to track if promo code is successfully applied
 
   @override
   Widget build(BuildContext context) {
-   
-   
-   final userId = FirebaseAuth.instance.currentUser?.uid;
+    final currentUser = FirebaseAuth.instance.currentUser;
 
+    if (currentUser == null) {
+      return _buildSignedOutPage();
+    }
 
-    final promoCodeController = TextEditingController();
+    final userId = currentUser.uid;
 
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _firestore
+          .collection('cartitems')
+          .where('userId', isEqualTo: userId)
+          .snapshots(),
+      builder: (context, cartSnapshot) {
+        if (cartSnapshot.hasError) {
+          return _buildErrorScaffold(
+            userId: userId,
+            message: 'Unable to load your cart. Please try again.',
+          );
+        }
 
-    //added 16 03 2025
-//commented on 16 03 2025
-if (userId == null) {
-  return Scaffold(
-    appBar: AppBar(
-      title: const Text("Cart",
-                style: TextStyle(color: Colors.white, fontSize: 18),
-      ),
-  leading: IconButton(
-    icon: const Icon(Icons.arrow_back),
-    onPressed: () {
-      Navigator.pop(context);
-    },
-  ),
-     backgroundColor: const Color(0xFF002A5C),
-        iconTheme: const IconThemeData(color: Colors.white),
-  ),
-    backgroundColor: Colors.white,
-    body: const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-  Icon(
-       Icons.remove_shopping_cart, // Cart cancel icon
-    size: 80,
-    color: Colors.grey,
-  ),
-  SizedBox(height: 16),
-  /*const Text(
-    'Sign in to continue',
-    style: TextStyle(
-      fontSize: 24,
-      fontWeight: FontWeight.bold,
-      color: Colors.black,
-    ),
-  ),*/
-  SizedBox(height: 8),
-  Text(
-    'Please sign in or create an account to access your cart.',
-    textAlign: TextAlign.center,
-    style: TextStyle(
-      fontSize: 16,
-      color: Colors.black,
-    ),
-  ),
- 
+        if (cartSnapshot.connectionState == ConnectionState.waiting ||
+            !cartSnapshot.hasData) {
+          return _buildLoadingScaffold(userId);
+        }
 
-]
+        final cartDocs = cartSnapshot.data!.docs;
+        if (cartDocs.isEmpty) {
+          return _buildEmptyCartScaffold(userId);
+        }
 
-      ),
-    ),
-  );
-}
-
-
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      appBar: AppBar(
-        title: StreamBuilder<QuerySnapshot>(
-          stream: FirebaseFirestore.instance
-              .collection('cartitems')
-              .where('userId', isEqualTo: userId)
-              .snapshots(),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Text(
-                'Cart',
-                style: TextStyle(color: Colors.white, fontSize: 18),
+        return FutureBuilder<Map<String, _CartProductState>>(
+          future: _productLookupFor(cartDocs),
+          builder: (context, productsSnapshot) {
+            if (productsSnapshot.hasError) {
+              return _buildErrorScaffold(
+                userId: userId,
+                itemCount: cartDocs.length,
+                message:
+                    'Some product information could not be loaded. Please try again.',
               );
             }
 
-            final totalUniqueItems = snapshot.data?.docs.length ?? 0;
+            if (productsSnapshot.connectionState == ConnectionState.waiting ||
+                !productsSnapshot.hasData) {
+              return _buildLoadingScaffold(
+                userId,
+                itemCount: cartDocs.length,
+              );
+            }
 
-            return Text(
-              'Cart ($totalUniqueItems)',
-              style: const TextStyle(color: Colors.white, fontSize: 18),
+            final productStates = productsSnapshot.data!;
+            final hasUnavailable = cartDocs.any((doc) {
+              final productId =
+                  (doc.data()['productId'] ?? '').toString().trim();
+              return !(productStates[productId]?.isAvailable ?? false);
+            });
+
+            final totalAmount = cartDocs.fold<double>(0.0, (sum, document) {
+              final value = document.data()['totalPrice'];
+              return sum + (value is num ? value.toDouble() : 0.0);
+            });
+
+            final safeDiscount = math.min(_discountAmount, totalAmount);
+            final displayTotal = math.max(0.0, totalAmount - safeDiscount);
+
+            return Scaffold(
+              resizeToAvoidBottomInset: true,
+              backgroundColor: const Color(0xFFFFF8FF),
+              appBar: _buildAppBar(
+                userId: userId,
+                itemCount: cartDocs.length,
+              ),
+              body: RefreshIndicator(
+                onRefresh: () async {
+                  setState(() {
+                    _productLookupSignature = '';
+                    _productLookupFuture = null;
+                  });
+                  await _productLookupFor(cartDocs);
+                },
+                child: ListView.separated(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+                  itemCount: cartDocs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final cartDocument = cartDocs[index];
+                    final productId = (cartDocument.data()['productId'] ?? '')
+                        .toString()
+                        .trim();
+                    final productState = productStates[productId] ??
+                        const _CartProductState.missing();
+
+                    return _buildCartItem(
+                      cartDocument: cartDocument,
+                      productState: productState,
+                      userId: userId,
+                    );
+                  },
+                ),
+              ),
+              bottomNavigationBar: _buildCartFooter(
+                cartDocs: cartDocs,
+                totalAmount: totalAmount,
+                displayTotal: displayTotal,
+                hasUnavailable: hasUnavailable,
+              ),
             );
           },
+        );
+      },
+    );
+  }
+
+  Scaffold _buildSignedOutPage() {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text(
+          'Cart',
+          style: TextStyle(color: Colors.white, fontSize: 18),
         ),
-        actions: [
-          Stack(
-            alignment: Alignment.center,
+        backgroundColor: _navy,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              IconButton(
-                icon: const Icon(Icons.favorite_border_outlined),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => WishlistPage(userId: userId),
-                    ),
-                  );
-                },
-              ),
-              StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('products')
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const SizedBox
-                        .shrink(); // Show nothing while loading
-                  }
-
-                  if (snapshot.hasError) {
-                    return const SizedBox.shrink(); // Handle error gracefully
-                  }
-
-                  final wishlistCount = snapshot.data?.docs.where((doc) {
-                        final likes = List<String>.from(doc['likes'] ?? []);
-                        return likes.contains(userId);
-                      }).length ??
-                      0;
-
-                  return wishlistCount > 0
-                      ? Positioned(
-                          right: 6,
-                          top: 6,
-                          child: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: BoxDecoration(
-                              color: Colors.red,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            constraints: const BoxConstraints(
-                              minWidth: 18,
-                              minHeight: 18,
-                            ),
-                            child: Text(
-                              '$wishlistCount',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink();
-                },
+              Icon(Icons.remove_shopping_cart, size: 80, color: Colors.grey),
+              SizedBox(height: 18),
+              Text(
+                'Please sign in or create an account to access your cart.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16),
               ),
             ],
           ),
-          /* IconButton(
-            icon: const Icon(
-              Icons.favorite_border_outlined,
-            ),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => WishlistPage(userId: userId),
-                ),
-              );
-            },
-          ),*/
-          IconButton(
-            icon: const Icon(
-              Icons.home,
-            ),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const HomeScreen()),
-              );
-            },
-          ),
-        ],
-        backgroundColor: const Color(0xFF002A5C),
-        iconTheme: const IconThemeData(color: Colors.white),
+        ),
       ),
-      body: 
-      
-      userId.isEmpty
-          ? const Center(child: Text('Please sign in to view this page')):
-      StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('cartitems')
-            .where('userId', isEqualTo: userId)
-            //  .orderBy('timestamp',
-            //     descending: true) // Order by timestamp, most recent first
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
+    );
+  }
 
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+  Scaffold _buildLoadingScaffold(String userId, {int itemCount = 0}) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF8FF),
+      appBar: _buildAppBar(userId: userId, itemCount: itemCount),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: itemCount > 0 ? math.min(itemCount, 4) : 3,
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        itemBuilder: (_, __) => const _CartItemLoadingCard(),
+      ),
+    );
+  }
+
+  Scaffold _buildErrorScaffold({
+    required String userId,
+    required String message,
+    int itemCount = 0,
+  }) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF8FF),
+      appBar: _buildAppBar(userId: userId, itemCount: itemCount),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, size: 56, color: Colors.red),
+              const SizedBox(height: 14),
+              Text(message, textAlign: TextAlign.center),
+              const SizedBox(height: 18),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _productLookupSignature = '';
+                    _productLookupFuture = null;
+                  });
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('Try again'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Scaffold _buildEmptyCartScaffold(String userId) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: _buildAppBar(userId: userId, itemCount: 0),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.shopping_bag_outlined,
+                size: 86,
+                color: Colors.grey,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Your cart is empty',
+                style: TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Nothing to show here right now.',
+                style: TextStyle(fontSize: 15, color: Colors.grey),
+              ),
+              const SizedBox(height: 28),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                alignment: WrapAlignment.center,
                 children: [
-                  const Text(
-                    'Your cart is empty',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '0 items in the basket',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  const Icon(
-                    Icons.shopping_bag_outlined,
-                    size: 80,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Nothing to show here right now',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => WishlistPage(
-                                  userId: userId), // Use widget.userId
-                            ),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          side: const BorderSide(color: Color(0xFF002A5C)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8.0),
-                          ),
+                  OutlinedButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => WishlistPage(userId: userId),
                         ),
-                        child: const Text(
-                          'Check Wishlist',
-                          style: TextStyle(color: Color(0xFF002A5C)),
+                      );
+                    },
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _navy,
+                      side: const BorderSide(color: _navy),
+                    ),
+                    child: const Text('Check Wishlist'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pushAndRemoveUntil(
+                        context,
+                        MaterialPageRoute(builder: (_) => const HomeScreen()),
+                        (route) => false,
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _navy,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Start Shopping'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar({
+    required String userId,
+    required int itemCount,
+  }) {
+    return AppBar(
+      title: Text(
+        itemCount > 0 ? 'Cart ($itemCount)' : 'Cart',
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      backgroundColor: _navy,
+      iconTheme: const IconThemeData(color: Colors.white),
+      actions: [
+        Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.favorite_border_outlined),
+              tooltip: 'Wishlist',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WishlistPage(userId: userId),
+                  ),
+                );
+              },
+            ),
+            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _firestore
+                  .collection('products')
+                  .where('likes', arrayContains: userId)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                final count = snapshot.data?.docs.length ?? 0;
+                if (count <= 0) return const SizedBox.shrink();
+
+                return Positioned(
+                  right: 4,
+                  top: 5,
+                  child: Container(
+                    constraints:
+                        const BoxConstraints(minWidth: 18, minHeight: 18),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      count > 99 ? '99+' : '$count',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        IconButton(
+          icon: const Icon(Icons.home),
+          tooltip: 'Home',
+          onPressed: () {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+              (route) => false,
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCartItem({
+    required QueryDocumentSnapshot<Map<String, dynamic>> cartDocument,
+    required _CartProductState productState,
+    required String userId,
+  }) {
+    final data = cartDocument.data();
+    final productId = (data['productId'] ?? '').toString().trim();
+    final productName = _capitalizeWords(
+      (data['productName'] ?? productState.name ?? 'Product').toString(),
+    );
+    final description =
+        (data['productDescription'] ?? productState.description ?? '')
+            .toString()
+            .trim();
+    final productImage =
+        (data['productImage'] ?? productState.imageUrl ?? '').toString().trim();
+    final quantityValue = data['quantity'];
+    final quantity = quantityValue is num ? quantityValue.toInt() : 1;
+    final priceValue = data['totalPrice'];
+    final totalPrice = priceValue is num ? priceValue.toDouble() : 0.0;
+    final color = _parseSelectedColor(data['selectedColor']);
+    final selectedSize = (data['selectedSize'] ?? '').toString().trim();
+    final isUnavailable = !productState.isAvailable;
+
+    var isLiked = productState.likes.contains(userId);
+
+    return StatefulBuilder(
+      builder: (context, setLocalState) {
+        return Opacity(
+          opacity: isUnavailable ? 0.64 : 1,
+          child: Card(
+            elevation: 1.5,
+            margin: EdgeInsets.zero,
+            color: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: Colors.grey.shade200),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: productImage.isEmpty
+                            ? const _ProductImageFallback()
+                            : CachedNetworkImage(
+                                imageUrl: productImage,
+                                width: 88,
+                                height: 88,
+                                fit: BoxFit.cover,
+                                placeholder: (_, __) =>
+                                    const _ProductImageFallback(),
+                                errorWidget: (_, __, ___) =>
+                                    const _ProductImageFallback(
+                                  icon: Icons.broken_image_outlined,
+                                ),
+                              ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    productName,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 15.5,
+                                      fontWeight: FontWeight.w700,
+                                      height: 1.25,
+                                    ),
+                                  ),
+                                ),
+                                if (!isUnavailable && !isLiked)
+                                  IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                      minWidth: 34,
+                                      minHeight: 34,
+                                    ),
+                                    icon: const Icon(
+                                      Icons.favorite_border,
+                                      size: 21,
+                                    ),
+                                    onPressed: () async {
+                                      final changed = await _toggleLikeStatus(
+                                        productId: productId,
+                                        isLiked: isLiked,
+                                      );
+                                      if (changed && mounted) {
+                                        setLocalState(() => isLiked = true);
+                                      }
+                                    },
+                                  ),
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(
+                                    minWidth: 34,
+                                    minHeight: 34,
+                                  ),
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    color: Colors.grey,
+                                    size: 21,
+                                  ),
+                                  onPressed: () =>
+                                      _confirmDeleteCartItem(cartDocument.id),
+                                ),
+                              ],
+                            ),
+                            if (description.isNotEmpty && !isUnavailable) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                description,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  height: 1.3,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                            if (isUnavailable) ...[
+                              const SizedBox(height: 5),
+                              const Text(
+                                'This product is no longer available',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.red,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                            if (color != null || selectedSize.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: [
+                                  if (color != null)
+                                    _CartAttributeChip(
+                                      label: 'Color',
+                                      color: color,
+                                    ),
+                                  if (selectedSize.isNotEmpty)
+                                    _CartAttributeChip(
+                                      label: 'Size: $selectedSize',
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 16),
-                      ElevatedButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  const HomeScreen(), // Remove the `const` if unnecessary
-                            ),
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF002A5C),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8.0),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Divider(height: 1, color: Colors.grey.shade200),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$currencySymbol ${_formatAmount(totalPrice)}',
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF202027),
                           ),
                         ),
-                        child: const Text(
-                          'Start Shopping',
-                          style: TextStyle(color: Colors.white),
+                      ),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF5F5F7),
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.remove, size: 19),
+                              onPressed: isUnavailable
+                                  ? null
+                                  : () => _decreaseQuantity(
+                                        productId: productId,
+                                        cartItemId: cartDocument.id,
+                                        quantity: quantity,
+                                      ),
+                            ),
+                            SizedBox(
+                              width: 28,
+                              child: Text(
+                                '$quantity',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.add, size: 19),
+                              onPressed: isUnavailable
+                                  ? null
+                                  : () => _updateQuantity(
+                                        cartDocument.id,
+                                        quantity + 1,
+                                      ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ],
               ),
-            );
-          }
-
-          final cartItems = snapshot.data!.docs;
-          final storeGroupedItems = _groupItemsByStore(cartItems);
-
-          return ListView.builder(
-            itemCount: storeGroupedItems.length,
-            itemBuilder: (context, index) {
-              final storeName = storeGroupedItems.keys.elementAt(index);
-              final items = storeGroupedItems[storeName]!;
-
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Padding(
-                    //   padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                    //   child: Text(
-                    //     storeName,
-                    //     style: const TextStyle(
-                    //         fontSize: 16, fontWeight: FontWeight.bold),
-                    //   ),
-                    // ),
-                    // Modify the call to _buildCartItem to pass context
-                    ...items
-                        .map((cartItem) => _buildCartItem(cartItem, context)),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-      bottomNavigationBar: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('cartitems')
-            .where('userId', isEqualTo: userId)
-            .snapshots(),
-      builder: (context, snapshot) {
-  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-    return const SizedBox.shrink();
+            ),
+          ),
+        );
+      },
+    );
   }
 
-  final cartDocs = snapshot.data!.docs;
-
-  double totalAmount = 0.0;
-  int totalUniqueItems = cartDocs.length;
-
-  for (var doc in cartDocs) {
-    final data = doc.data() as Map<String, dynamic>;
-    totalAmount += (data['totalPrice'] ?? 0.0).toDouble();
-  }
-
-  double displayTotalAmount =
-      _isPromoApplied ? totalAmount - _discountAmount : totalAmount;
-
-  return FutureBuilder<List<String>>(
-    future: _getUnavailableProductIds(cartDocs),
-    builder: (context, unavailableSnapshot) {
-      // If future not done yet, assume no unavailable items for UI purposes
-      final bool hasUnavailable =
-          (unavailableSnapshot.hasData && (unavailableSnapshot.data?.isNotEmpty ?? false));
-
-      return SafeArea(
+  Widget _buildCartFooter({
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> cartDocs,
+    required double totalAmount,
+    required double displayTotal,
+    required bool hasUnavailable,
+  }) {
+    return SafeArea(
+      top: false,
+      child: Material(
+        color: Colors.white,
+        elevation: 12,
         child: Padding(
-          padding: MediaQuery.of(context).viewInsets, // Adjust for keyboard
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Promo code section
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0, vertical: 4.0),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: promoCodeController,
-                            decoration: InputDecoration(
-                              hintText: 'Enter promo code',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8.0),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                vertical: 8.0,
-                                horizontal: 12.0,
-                              ),
-                            ),
-                            style: const TextStyle(fontSize: 14),
-                          ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _promoCodeController,
+                      enabled: !_isApplyingPromo,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: InputDecoration(
+                        hintText: 'Enter promo code',
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 14,
                         ),
-                        const SizedBox(width: 10),
-                      ElevatedButton(
-  onPressed: hasUnavailable
-      ? () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Please remove unavailable items before applying a promo code.',
-              ),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      : () async {
-          String promoCode = promoCodeController.text.trim();
-          bool isValid = await _validatePromoCode(promoCode, totalAmount);
-          setState(() {
-            if (isValid) {
-              _appliedPromoCode = promoCode;
-              _isPromoApplied = true;
-            } else {
-              _isPromoApplied = false;
-              _discountAmount = 0.0;
-              _appliedPromoCode = null;
-            }
-          });
-        },
-  child: const Text('Apply'),
-),
-
-                      ],
-                    ),
-                    const SizedBox(height: 8.0),
-                    // Display amount saved
-                    if (_isPromoApplied && _discountAmount > 0)
-                      Text(
-                        'You saved $currencySymbol ${_convertPrice(_discountAmount).toStringAsFixed(2)} using the promo code "$_appliedPromoCode".',
-                        style: const TextStyle(
-                          color: Colors.green,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        overflow: TextOverflow
-                            .ellipsis, // Prevents text from wrapping to the next line
-                        maxLines:
-                            1, // Ensures the text stays on a single line
                       ),
-                  ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    height: 48,
+                    child: ElevatedButton(
+                      onPressed: _isApplyingPromo
+                          ? null
+                          : () => _applyPromoFromFooter(
+                                totalAmount: totalAmount,
+                                cartDocs: cartDocs,
+                                hasUnavailable: hasUnavailable,
+                              ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF4F1F7),
+                        foregroundColor: const Color(0xFF6B4FA1),
+                        elevation: 1,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                      ),
+                      child: _isApplyingPromo
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Apply'),
+                    ),
+                  ),
+                ],
+              ),
+              if (_isPromoApplied && _discountAmount > 0) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'You saved $currencySymbol ${_formatAmount(_discountAmount)} with "$_appliedPromoCode".',
+                  style: const TextStyle(
+                    color: Colors.green,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              const SizedBox(height: 10),
+              Text(
+                'Total: $currencySymbol ${_formatAmount(displayTotal)}',
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFE53935),
                 ),
               ),
-
-              // Total and Checkout button on separate rows
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0, vertical: 4.0),
-                color: Colors.white,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Total: $currencySymbol ${NumberFormat("#,##0.00").format(_convertPrice(displayTotalAmount))}',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.red,
-                      ),
-                      textAlign: TextAlign.left,
+              if (hasUnavailable) ...[
+                const SizedBox(height: 6),
+                const Text(
+                  'Remove unavailable items before continuing to checkout.',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Colors.red,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: hasUnavailable
+                      ? () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Some items are unavailable. Please remove them before checkout.',
+                              ),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      : () {
+                          FocusScope.of(context).unfocus();
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => CheckoutPage(
+                                tAmount: displayTotal,
+                              ),
+                            ),
+                          );
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: hasUnavailable ? Colors.grey : _orange,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    const SizedBox(height: 8.0),
-
-                    if (hasUnavailable)
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 4.0),
-                        child: Text(
-                          'Some items in your cart are no longer available. Please remove them to continue to checkout.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.red,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 16.0),
-                      child: ElevatedButton(
-                        onPressed: hasUnavailable
-                            ? () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Some items in your cart are no longer available. Please remove them to continue to checkout.',
-                                    ),
-                                  ),
-                                );
-                              }
-                            : () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => CheckoutPage(
-                                      tAmount: displayTotalAmount,
-                                    ),
-                                  ),
-                                );
-                              },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: hasUnavailable
-                              ? Colors.grey
-                              : const Color(0xFFFFA500),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 20, vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8.0),
-                          ),
-                        ),
-                        child: Text(
-                          hasUnavailable
-                              ? 'Resolve unavailable items'
-                              : 'Checkout ($totalUniqueItems)',
-                          style: const TextStyle(
-                              fontSize: 16, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
+                  child: Text(
+                    hasUnavailable
+                        ? 'Resolve unavailable items'
+                        : 'Checkout (${cartDocs.length})',
+                    style: const TextStyle(fontSize: 16.5),
+                  ),
                 ),
               ),
             ],
           ),
         ),
-      );
-    },
-  );
-},
-
       ),
     );
   }
 
-  Map<String, List<QueryDocumentSnapshot>> _groupItemsByStore(
-      List<QueryDocumentSnapshot> items) {
-    final Map<String, List<QueryDocumentSnapshot>> groupedItems = {};
+  Future<bool> _toggleLikeStatus({
+    required String productId,
+    required bool isLiked,
+  }) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return false;
 
-    for (var item in items) {
-      final data = item.data() as Map<String, dynamic>;
-      final storeName = data['storeName'] ?? 'Unknown Store';
-
-      if (!groupedItems.containsKey(storeName)) {
-        groupedItems[storeName] = [];
-      }
-
-      groupedItems[storeName]!.add(item);
-    }
-
-    return groupedItems;
-  }
-
-  // Ensure currency data is loaded first before using it
- bool _currencyLoaded = false;
-
-Future<void> _loadCurrencyData() async {
-  final prefs = await SharedPreferences.getInstance();
-
-  final base = prefs.getString('baseCurrency') ?? 'GHS';
-  final selected = prefs.getString('selectedCurrency') ?? base;
-  final rate = prefs.getDouble('conversionRate') ?? 1.0;
-
-  setState(() {
-    currencySymbol = selected;  // 👈 show user’s chosen currency code
-    exchangeRate = rate;        // 👈 base → selected
-    _currencyLoaded = true;
-  });
-}
-
-// Function to apply the conversion
-  double _convertPrice(double price) {
-    if (exchangeRate != null) {
-      return price * exchangeRate!;
-    }
-    return price; // Default price without conversion
-  }
-
-  Future<int> _getProductMinQuantity(String productId) async {
-    final productRef =
-        FirebaseFirestore.instance.collection('products').doc(productId);
-    final productDoc = await productRef.get();
-    if (productDoc.exists) {
-      final data = productDoc.data() as Map<String, dynamic>;
-      return data['productminquantity'] ?? 1;
-    }
-    return 1; // Default minimum quantity if not specified
-  }
-
-void _updateQuantity(String cartItemId, int newQuantity) async {
-  try {
-    final cartItemRef =
-        FirebaseFirestore.instance.collection('cartitems').doc(cartItemId);
-    final docSnapshot = await cartItemRef.get();
-    final data = docSnapshot.data() as Map<String, dynamic>;
-
-    final double unitPrice =
-        (data['totalPrice'] / (data['quantity'] ?? 1)).toDouble();
-    final double newTotalPrice = unitPrice * newQuantity;
-
-    await cartItemRef.update({
-      'quantity': newQuantity,
-      'totalPrice': newTotalPrice,
-    });
-
-    _revalidatePromoAfterCartChange();
-  } catch (e) {
-    print('Error updating quantity: $e');
-  }
-}
-
-
- void _deleteCartItem(String cartItemId) async {
-  try {
-    await FirebaseFirestore.instance
-        .collection('cartitems')
-        .doc(cartItemId)
-        .delete();
-
-    _revalidatePromoAfterCartChange();
-  } catch (e) {
-    print('Error deleting cart item: $e');
-  }
-}
-
-
-void _revalidatePromoAfterCartChange() async {
-  if (!_isPromoApplied || _appliedPromoCode == null) return;
-
-  final cartSnapshot = await FirebaseFirestore.instance
-      .collection('cartitems')
-      .where('userId', isEqualTo: userId)
-      .get();
-
-  double newTotal = 0.0;
-  for (var doc in cartSnapshot.docs) {
-    final data = doc.data();
-    newTotal += (data['totalPrice'] ?? 0.0).toDouble();
-  }
-
-  final promoDoc = await FirebaseFirestore.instance
-      .collection('promo_codes')
-      .where('code', isEqualTo: _appliedPromoCode)
-      .limit(1)
-      .get();
-
-  if (promoDoc.docs.isEmpty) return;
-
-  final promoData = promoDoc.docs.first.data();
-  final rawMinOrderValue = (promoData['minOrderValue'] as num).toDouble();
-  final minOrderValue = _convertPrice(rawMinOrderValue);
-  final discountType = promoData['discountType'] as String;
-  final discountValue = (promoData['value'] as num).toDouble();
-
-  // ❌ Invalidate promo if cart total is now below minimum
-  if (newTotal < minOrderValue) {
-    setState(() {
-      _isPromoApplied = false;
-      _appliedPromoCode = null;
-      _discountAmount = 0.0;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(isLiked ? 'Remove from Wishlist' : 'Add to Wishlist'),
         content: Text(
-            'Promo code has been removed as your cart total is below $currencySymbol${minOrderValue.toStringAsFixed(2)}.'),
-        backgroundColor: Colors.red,
+          isLiked
+              ? 'Remove this product from your wishlist?'
+              : 'Add this product to your wishlist?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirm'),
+          ),
+        ],
       ),
     );
 
-    // Remove promoCodeUsed field from cart items
-    for (var doc in cartSnapshot.docs) {
-      await doc.reference.update({'promoCodeUsed': FieldValue.delete()});
-    }
+    if (confirmed != true) return false;
 
-    return;
-  }
+    try {
+      await _firestore.collection('products').doc(productId).update({
+        'likes': isLiked
+            ? FieldValue.arrayRemove([currentUser.uid])
+            : FieldValue.arrayUnion([currentUser.uid]),
+      });
 
-  // ✅ Recalculate discount
-  final adjustedDiscount = discountType == 'percentage'
-      ? newTotal * (discountValue / 100)
-      : discountValue;
-
-  // Avoid negative totals
-  final safeDiscount = adjustedDiscount > newTotal ? newTotal : adjustedDiscount;
-
-  setState(() {
-    _discountAmount = safeDiscount;
-  });
-}
-
-
-Future<bool> _validatePromoCode(String code, double totalAmount) async {
-  try {
-    final promoCodeDoc = await FirebaseFirestore.instance
-        .collection('promo_codes')
-        .where('code', isEqualTo: code)
-        .where('isActive', isEqualTo: true)
-        .get();
-
-    if (promoCodeDoc.docs.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Invalid or inactive promo code'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return false;
-    }
-
-    final data = promoCodeDoc.docs.first.data();
-    final expiryDate = (data['expiryDate'] as Timestamp).toDate();
-    final rawMinOrderValue = (data['minOrderValue'] as num).toDouble();
-    final minOrderValue = _convertPrice(rawMinOrderValue); // 👈 Converted
-    final discountType = data['discountType'] as String;
-    final discountValue = (data['value'] as num).toDouble();
-    final currentUserUsage = data['usersUsed'][userId] ?? 0;
-    final usagePerUser = data['usagePerUser'] as int;
-
-    // ✅ Check if promo code already applied to the cart
-    final cartSnapshot = await FirebaseFirestore.instance
-        .collection('cartitems')
-        .where('userId', isEqualTo: userId)
-        .get();
-
-    final alreadyUsedInCart = cartSnapshot.docs.any((doc) {
-      final cartData = doc.data();
-      return cartData['promoCodeUsed'] == code;
-    });
-
-    if (alreadyUsedInCart) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You’ve already applied this promo code to your cart.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return false;
-    }
-
-    if (DateTime.now().isAfter(expiryDate)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Promo code has expired'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return false;
-    }
-
-    if (totalAmount < minOrderValue) {
+      if (!mounted) return true;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'Minimum order value is $currencySymbol${minOrderValue.toStringAsFixed(2)}'),
+            isLiked
+                ? 'Product removed from your wishlist.'
+                : 'Product added to your wishlist.',
+          ),
+        ),
+      );
+      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to update wishlist: $error'),
           backgroundColor: Colors.red,
         ),
       );
       return false;
     }
+  }
 
-    if (currentUserUsage >= usagePerUser) {
+  Future<void> _confirmDeleteCartItem(String cartItemId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove Item'),
+        content: const Text('Are you sure you want to remove this item?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _deleteCartItem(cartItemId);
+    }
+  }
+
+  Future<void> _decreaseQuantity({
+    required String productId,
+    required String cartItemId,
+    required int quantity,
+  }) async {
+    final minimum = await _getProductMinQuantity(productId);
+    if (!mounted) return;
+
+    if (quantity <= minimum || quantity <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Minimum quantity for this product is $minimum.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    await _updateQuantity(cartItemId, quantity - 1);
+  }
+
+  Future<int> _getProductMinQuantity(String productId) async {
+    try {
+      final document =
+          await _firestore.collection('products').doc(productId).get();
+      final value = document.data()?['productminquantity'];
+      if (value is num && value.toInt() > 0) return value.toInt();
+    } catch (_) {
+      // Fall back to one when the product minimum cannot be read.
+    }
+    return 1;
+  }
+
+  Future<void> _updateQuantity(String cartItemId, int newQuantity) async {
+    try {
+      final reference = _firestore.collection('cartitems').doc(cartItemId);
+      final snapshot = await reference.get();
+      final data = snapshot.data();
+      if (data == null) return;
+
+      final currentQuantityValue = data['quantity'];
+      final currentQuantity = currentQuantityValue is num
+          ? math.max(1, currentQuantityValue.toInt())
+          : 1;
+      final totalPriceValue = data['totalPrice'];
+      final currentTotal =
+          totalPriceValue is num ? totalPriceValue.toDouble() : 0.0;
+      final unitPrice = currentTotal / currentQuantity;
+
+      await reference.update({
+        'quantity': newQuantity,
+        'totalPrice': unitPrice * newQuantity,
+      });
+
+      await _revalidatePromoAfterCartChange();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to update quantity: $error'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _deleteCartItem(String cartItemId) async {
+    try {
+      await _firestore.collection('cartitems').doc(cartItemId).delete();
+      await _revalidatePromoAfterCartChange();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to remove the item: $error'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _applyPromoFromFooter({
+    required double totalAmount,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> cartDocs,
+    required bool hasUnavailable,
+  }) async {
+    FocusScope.of(context).unfocus();
+
+    if (hasUnavailable) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Promo code usage limit reached'),
+          content: Text(
+            'Please remove unavailable items before applying a promo code.',
+          ),
           backgroundColor: Colors.red,
         ),
       );
-      return false;
+      return;
     }
 
-    // ✅ Calculate discount
-    setState(() {
-      _discountAmount = discountType == 'percentage'
+    final code = _promoCodeController.text.trim();
+    if (code.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a promo code first.')),
+      );
+      return;
+    }
+
+    setState(() => _isApplyingPromo = true);
+    try {
+      await _validatePromoCode(
+        code: code,
+        totalAmount: totalAmount,
+        cartDocs: cartDocs,
+      );
+    } finally {
+      if (mounted) setState(() => _isApplyingPromo = false);
+    }
+  }
+
+  Future<bool> _validatePromoCode({
+    required String code,
+    required double totalAmount,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> cartDocs,
+  }) async {
+    try {
+      final promoSnapshot = await _firestore
+          .collection('promo_codes')
+          .where('code', isEqualTo: code)
+          .where('isActive', isEqualTo: true)
+          .limit(1)
+          .get();
+
+      if (promoSnapshot.docs.isEmpty) {
+        _showPromoMessage('Invalid or inactive promo code.', isError: true);
+        return false;
+      }
+
+      final promoDocument = promoSnapshot.docs.first;
+      final data = promoDocument.data();
+      final expiryTimestamp = data['expiryDate'];
+      final expiryDate = expiryTimestamp is Timestamp
+          ? expiryTimestamp.toDate()
+          : DateTime.fromMillisecondsSinceEpoch(0);
+      final minOrderValue =
+          data['minOrderValue'] is num ? (data['minOrderValue'] as num).toDouble() : 0.0;
+      final discountType = (data['discountType'] ?? '').toString();
+      final discountValue =
+          data['value'] is num ? (data['value'] as num).toDouble() : 0.0;
+      final usagePerUser =
+          data['usagePerUser'] is num ? (data['usagePerUser'] as num).toInt() : 1;
+      final usersUsed = data['usersUsed'] is Map
+          ? Map<String, dynamic>.from(data['usersUsed'] as Map)
+          : <String, dynamic>{};
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final currentUsageValue = uid == null ? 0 : usersUsed[uid];
+      final currentUsage =
+          currentUsageValue is num ? currentUsageValue.toInt() : 0;
+
+      final alreadyUsedInCart = cartDocs.any(
+        (document) => document.data()['promoCodeUsed'] == code,
+      );
+
+      if (alreadyUsedInCart) {
+        _showPromoMessage(
+          'This promo code is already applied to your cart.',
+          isError: true,
+        );
+        return false;
+      }
+
+      if (DateTime.now().isAfter(expiryDate)) {
+        _showPromoMessage('Promo code has expired.', isError: true);
+        return false;
+      }
+
+      if (totalAmount < minOrderValue) {
+        _showPromoMessage(
+          'Minimum order value is $currencySymbol ${_formatAmount(minOrderValue)}.',
+          isError: true,
+        );
+        return false;
+      }
+
+      if (currentUsage >= usagePerUser) {
+        _showPromoMessage('Promo code usage limit reached.', isError: true);
+        return false;
+      }
+
+      final calculatedDiscount = discountType == 'percentage'
           ? totalAmount * (discountValue / 100)
           : discountValue;
-      _appliedPromoCode = code;
+      final safeDiscount = math.min(totalAmount, calculatedDiscount);
+
+      final batch = _firestore.batch();
+      for (final cartDocument in cartDocs) {
+        batch.update(cartDocument.reference, {'promoCodeUsed': code});
+      }
+      await batch.commit();
+
+      if (uid != null) {
+        await promoDocument.reference.update({
+          'usersUsed.$uid': FieldValue.increment(1),
+          'usageLimit': FieldValue.increment(-1),
+        });
+      }
+
+      await _firestore.collection('discounts').add({
+        'userId': uid,
+        'date': Timestamp.now(),
+        'discountAmount': safeDiscount,
+        'promoCode': code,
+      });
+
+      if (!mounted) return true;
+      setState(() {
+        _discountAmount = safeDiscount;
+        _appliedPromoCode = code;
+        _appliedPromoReference = promoDocument.reference;
+        _isPromoApplied = true;
+      });
+
+      _showPromoMessage('Promo code applied successfully.');
+      return true;
+    } catch (error) {
+      _showPromoMessage(
+        'An error occurred while validating the promo code.',
+        isError: true,
+      );
+      debugPrint('Promo validation error: $error');
+      return false;
+    }
+  }
+
+  Future<void> _revalidatePromoAfterCartChange() async {
+    if (!_isPromoApplied || _appliedPromoCode == null) return;
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final cartSnapshot = await _firestore
+        .collection('cartitems')
+        .where('userId', isEqualTo: uid)
+        .get();
+
+    final newTotal = cartSnapshot.docs.fold<double>(0.0, (sum, document) {
+      final value = document.data()['totalPrice'];
+      return sum + (value is num ? value.toDouble() : 0.0);
     });
 
-    // ✅ Update each cart item with the promo code used
-    for (var doc in cartSnapshot.docs) {
-      await doc.reference.update({'promoCodeUsed': code});
+    DocumentSnapshot<Map<String, dynamic>> promoDocument;
+    if (_appliedPromoReference != null) {
+      promoDocument = await _appliedPromoReference!.get();
+    } else {
+      final query = await _firestore
+          .collection('promo_codes')
+          .where('code', isEqualTo: _appliedPromoCode)
+          .limit(1)
+          .get();
+      if (query.docs.isEmpty) return;
+      promoDocument = query.docs.first;
     }
 
-    // ✅ Update promo usage in Firestore
-    _updatePromoCodeUsage(code);
+    final promoData = promoDocument.data();
+    if (promoData == null) return;
 
-    // ✅ Log usage in discounts collection
-    await FirebaseFirestore.instance.collection('discounts').add({
-      'userId': userId,
-      'date': Timestamp.now(),
-      'discountAmount': _discountAmount,
-      'promoCode': code,
+    final minOrderValue = promoData['minOrderValue'] is num
+        ? (promoData['minOrderValue'] as num).toDouble()
+        : 0.0;
+    final discountType = (promoData['discountType'] ?? '').toString();
+    final discountValue = promoData['value'] is num
+        ? (promoData['value'] as num).toDouble()
+        : 0.0;
+
+    if (newTotal < minOrderValue) {
+      final batch = _firestore.batch();
+      for (final document in cartSnapshot.docs) {
+        batch.update(
+          document.reference,
+          {'promoCodeUsed': FieldValue.delete()},
+        );
+      }
+      await batch.commit();
+
+      if (!mounted) return;
+      setState(() {
+        _isPromoApplied = false;
+        _appliedPromoCode = null;
+        _appliedPromoReference = null;
+        _discountAmount = 0.0;
+        _promoCodeController.clear();
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Promo code removed because the cart total is below '
+            '$currencySymbol ${_formatAmount(minOrderValue)}.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final adjustedDiscount = discountType == 'percentage'
+        ? newTotal * (discountValue / 100)
+        : discountValue;
+
+    if (!mounted) return;
+    setState(() {
+      _discountAmount = math.min(newTotal, adjustedDiscount);
     });
+  }
 
+  void _showPromoMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Promo Code applied successfully'),
-        backgroundColor: Colors.green,
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : Colors.green,
       ),
     );
-
-    return true;
-  } catch (e) {
-    print('Error validating promo code: $e');
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('An error occurred while validating the promo code'),
-        backgroundColor: Colors.red,
-      ),
-    );
-    return false;
   }
 }
 
+class _CartProductState {
+  final bool exists;
+  final bool isPublished;
+  final Set<String> likes;
+  final String? name;
+  final String? description;
+  final String? imageUrl;
 
-  void _updatePromoCodeUsage(String promoCode) async {
-    final promoCodeRef = _firestore.collection('promo_codes').doc(promoCode);
-    await promoCodeRef.update({
-      'usersUsed.$userId': FieldValue.increment(1),
-      'usageLimit': FieldValue.increment(-1),
-    });
+  const _CartProductState({
+    required this.exists,
+    required this.isPublished,
+    required this.likes,
+    this.name,
+    this.description,
+    this.imageUrl,
+  });
+
+  const _CartProductState.missing()
+      : exists = false,
+        isPublished = false,
+        likes = const <String>{},
+        name = null,
+        description = null,
+        imageUrl = null;
+
+  bool get isAvailable => exists && isPublished;
+
+  factory _CartProductState.fromDocument(
+    QueryDocumentSnapshot<Map<String, dynamic>> document,
+  ) {
+    final data = document.data();
+    final rawLikes = data['likes'];
+
+    return _CartProductState(
+      exists: true,
+      isPublished: data['isPublish'] is bool ? data['isPublish'] as bool : true,
+      likes: rawLikes is Iterable
+          ? rawLikes.map((value) => value.toString()).toSet()
+          : const <String>{},
+      name: (data['name'] ?? data['productName'])?.toString(),
+      description:
+          (data['description'] ?? data['productDescription'])?.toString(),
+      imageUrl: (data['image'] ?? data['productImage'])?.toString(),
+    );
   }
+}
 
-  //added 23 01 2025
+class _CartItemLoadingCard extends StatelessWidget {
+  const _CartItemLoadingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 148,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 88,
+            height: 88,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(height: 16, color: Colors.grey.shade200),
+                const SizedBox(height: 10),
+                FractionallySizedBox(
+                  widthFactor: 0.72,
+                  child: Container(height: 12, color: Colors.grey.shade200),
+                ),
+                const Spacer(),
+                FractionallySizedBox(
+                  widthFactor: 0.42,
+                  child: Container(height: 16, color: Colors.grey.shade200),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProductImageFallback extends StatelessWidget {
+  final IconData icon;
+
+  const _ProductImageFallback({
+    this.icon = Icons.shopping_bag_outlined,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 88,
+      height: 88,
+      color: const Color(0xFFF2F2F4),
+      alignment: Alignment.center,
+      child: Icon(icon, color: Colors.grey, size: 30),
+    );
+  }
+}
+
+class _CartAttributeChip extends StatelessWidget {
+  final String label;
+  final Color? color;
+
+  const _CartAttributeChip({
+    required this.label,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F4F6),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (color != null) ...[
+            Container(
+              width: 13,
+              height: 13,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.black12),
+              ),
+            ),
+            const SizedBox(width: 5),
+          ],
+          Text(label, style: const TextStyle(fontSize: 11.5)),
+        ],
+      ),
+    );
+  }
 }

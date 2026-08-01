@@ -1,6 +1,6 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 class EditShippingAddressPage extends StatefulWidget {
   final String addressId;
@@ -16,40 +16,53 @@ class EditShippingAddressPage extends StatefulWidget {
 }
 
 class _EditShippingAddressPageState extends State<EditShippingAddressPage> {
-  late final TextEditingController _fullnameController;
-  late final TextEditingController _phoneController;   // NEW
-  late final TextEditingController _addressController;
-  late final TextEditingController _cityController;
-  late final TextEditingController _regionController;
-  late final TextEditingController _countryController;
-  late final TextEditingController _zipcodeController;
-  bool isLoading = true;
+  final TextEditingController _fullnameController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController();
+  final TextEditingController _cityController = TextEditingController();
+  final TextEditingController _countryController = TextEditingController();
+  final TextEditingController _zipcodeController = TextEditingController();
+
+  List<String> _regions = const [];
+  String? _selectedRegion;
+  String? _legacyRegion;
+
+  bool _isLoading = true;
+  bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-    _fullnameController = TextEditingController();
-    _phoneController = TextEditingController();        // NEW
-    _addressController = TextEditingController();
-    _cityController = TextEditingController();
-    _regionController = TextEditingController();
-    _countryController = TextEditingController();
-    _zipcodeController = TextEditingController();
-    _fetchAddressData();
+    _loadPageData();
   }
 
-  // --- Phone validation helpers (same logic as Add page) ---
+  @override
+  void dispose() {
+    _fullnameController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+    _cityController.dispose();
+    _countryController.dispose();
+    _zipcodeController.dispose();
+    super.dispose();
+  }
+
+  String _normalizeRegionKey(String value) {
+    return value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceFirst(RegExp(r'\s+region$'), '');
+  }
+
+  String _normalizePhone(String input) {
+    return input.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+  }
+
   bool _isValidPhone(String input) {
-    // Normalize (remove spaces, dashes, parentheses)
-    final normalized = input.replaceAll(RegExp(r'[\s\-\(\)]'), '');
-
-    // General E.164-like (optional +, 8–15 digits, cannot start with 0 after +)
+    final normalized = _normalizePhone(input);
     final e164ish = RegExp(r'^\+?[1-9]\d{7,14}$');
-
-    // Ghana local format (0XXXXXXXXX) – 10 digits starting with 0
     final ghLocal = RegExp(r'^0\d{9}$');
-
-    // Ghana E.164 (+233XXXXXXXXX) – +233 followed by 9 digits
     final ghE164 = RegExp(r'^\+233\d{9}$');
 
     return e164ish.hasMatch(normalized) ||
@@ -57,164 +70,151 @@ class _EditShippingAddressPageState extends State<EditShippingAddressPage> {
         ghE164.hasMatch(normalized);
   }
 
-  Future<void> _fetchAddressData() async {
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('shippingaddress')
-          .doc(widget.addressId)
-          .get();
+  Future<List<String>> _fetchRegions() async {
+    final doc = await FirebaseFirestore.instance
+        .collection('regions')
+        .doc('regions')
+        .get();
 
-      if (doc.exists) {
-        final data = doc.data()!;
-        setState(() {
-          _fullnameController.text = data['fullname'] ?? '';
-          _phoneController.text = data['phone'] ?? '';         // NEW
-          _addressController.text = data['address'] ?? '';
-          _cityController.text = data['city'] ?? '';
-          _regionController.text = data['region'] ?? '';
-          _countryController.text = data['country'] ?? '';
-          _zipcodeController.text = data['zipcode'] ?? '';
-          isLoading = false;
-        });
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Address not found!")),
-        );
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      // ignore: avoid_print
-      print("Error fetching address: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Error fetching address data.")),
+    if (!doc.exists) {
+      throw StateError(
+        'The regions/regions document was not found in Firestore.',
       );
-      Navigator.pop(context);
     }
+
+    final data = doc.data() ?? <String, dynamic>{};
+    final rawNames = data['name'];
+
+    if (rawNames is! List) {
+      throw StateError(
+        'The regions/regions document must contain a name array.',
+      );
+    }
+
+    final regions = <String>[];
+    final seenKeys = <String>{};
+
+    for (final value in rawNames) {
+      final region = value.toString().trim().replaceAll(RegExp(r'\s+'), ' ');
+      final key = _normalizeRegionKey(region);
+
+      if (region.isNotEmpty && key.isNotEmpty && seenKeys.add(key)) {
+        regions.add(region);
+      }
+    }
+
+    return regions;
   }
 
-  Future<void> _showRegionPicker() async {
+  Future<void> _loadPageData() async {
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('regions')
-          .doc('regions')
-          .get();
+      final results = await Future.wait<dynamic>([
+        FirebaseFirestore.instance
+            .collection('shippingaddress')
+            .doc(widget.addressId)
+            .get(),
+        _fetchRegions(),
+      ]);
 
-      if (doc.exists) {
-        final List<dynamic> regionList = doc['name'] ?? [];
-        if (regionList.isNotEmpty) {
-          // ignore: use_build_context_synchronously
-          showDialog(
-            context: context,
-            builder: (context) {
-              return AlertDialog(
-                title: const Text("Select Region"),
-                content: SizedBox(
-                  width: double.maxFinite,
-                  child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: regionList.length,
-                    itemBuilder: (context, index) {
-                      return ListTile(
-                        title: Text(regionList[index]),
-                        onTap: () {
-                          setState(() {
-                            _regionController.text = regionList[index];
-                          });
-                          Navigator.pop(context);
-                        },
-                      );
-                    },
-                  ),
-                ),
-              );
-            },
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("No regions available!")),
-          );
-        }
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Regions data not found!")),
-        );
+      final addressDoc =
+          results[0] as DocumentSnapshot<Map<String, dynamic>>;
+      final regions = results[1] as List<String>;
+
+      if (!addressDoc.exists) {
+        throw StateError('Address not found.');
       }
-    } catch (e) {
-      // ignore: avoid_print
-      print("Error fetching regions: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Error fetching regions.")),
-      );
+
+      final data = addressDoc.data() ?? <String, dynamic>{};
+      final savedRegion = (data['region'] ?? '').toString().trim();
+      final savedRegionKey = (data['regionKey'] ?? '').toString().trim();
+      final comparisonKey = savedRegionKey.isNotEmpty
+          ? _normalizeRegionKey(savedRegionKey)
+          : _normalizeRegionKey(savedRegion);
+
+      String? canonicalRegion;
+      for (final region in regions) {
+        if (_normalizeRegionKey(region) == comparisonKey) {
+          canonicalRegion = region;
+          break;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _regions = regions;
+        _selectedRegion = canonicalRegion;
+        _legacyRegion = canonicalRegion == null && savedRegion.isNotEmpty
+            ? savedRegion
+            : null;
+
+        _fullnameController.text = (data['fullname'] ?? '').toString();
+        _phoneController.text = (data['phone'] ?? '').toString();
+        _addressController.text = (data['address'] ?? '').toString();
+        _cityController.text = (data['city'] ?? '').toString();
+        _countryController.text = (data['country'] ?? '').toString();
+        _zipcodeController.text = (data['zipcode'] ?? '').toString();
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      _showError(_friendlyError(error));
     }
   }
 
   Future<void> _updateAddress() async {
-    // Trim input values
+    if (_isSaving) return;
+
     final fullName = _fullnameController.text.trim();
-    final phone = _phoneController.text.trim();                 // NEW
+    final phone = _normalizePhone(_phoneController.text.trim());
     final address = _addressController.text.trim();
     final city = _cityController.text.trim();
-    final region = _regionController.text.trim();
+    final region = _selectedRegion?.trim() ?? '';
     final country = _countryController.text.trim();
     final zipCode = _zipcodeController.text.trim();
 
-    // Validation checks
     if (fullName.isEmpty) {
-      _showError("Full Name cannot be empty.");
+      _showError('Full Name cannot be empty.');
       return;
     }
-    if (!RegExp(r"^[a-zA-Z\s]+$").hasMatch(fullName)) {
-      _showError("Full Name can only contain letters and spaces.");
+    if (!RegExp(r"^[a-zA-ZÀ-ÿ'’.\-\s]+$").hasMatch(fullName)) {
+      _showError(
+        'Full Name can only contain letters, spaces, apostrophes and hyphens.',
+      );
       return;
     }
-
-    // Phone REQUIRED + validated
     if (phone.isEmpty) {
-      _showError("Phone Number is required.");
+      _showError('Phone Number is required.');
       return;
     }
     if (!_isValidPhone(phone)) {
       _showError(
-          "Enter a valid phone number (e.g., +233541234567 or 0541234567).");
+        'Enter a valid phone number, such as +233541234567 or 0541234567.',
+      );
       return;
     }
-
     if (address.isEmpty) {
-      _showError("Address cannot be empty.");
+      _showError('Address cannot be empty.');
       return;
     }
-
     if (city.isEmpty) {
-      _showError("City cannot be empty.");
+      _showError('City cannot be empty.');
       return;
     }
-    if (!RegExp(r"^[a-zA-Z\s]+$").hasMatch(city)) {
-      _showError("City can only contain letters and spaces.");
-      return;
-    }
-
     if (region.isEmpty) {
-      _showError("Region cannot be empty.");
+      _showError('Please select a valid region from the current region list.');
       return;
     }
-    if (!RegExp(r"^[a-zA-Z\s]+$").hasMatch(region)) {
-      _showError("Region can only contain letters and spaces.");
-      return;
-    }
-
     if (country.isEmpty) {
-      _showError("Country cannot be empty.");
+      _showError('Country cannot be empty.');
       return;
     }
-    if (!RegExp(r"^[a-zA-Z\s]+$").hasMatch(country)) {
-      _showError("Country can only contain letters and spaces.");
+    if (zipCode.isNotEmpty && !RegExp(r'^[\w\-\s]{3,12}$').hasMatch(zipCode)) {
+      _showError('Enter a valid postal or zip code.');
       return;
     }
 
-    if (zipCode.isNotEmpty && !RegExp(r"^[\d-]{4,10}$").hasMatch(zipCode)) {
-      _showError("Enter a valid Zip Code (4-10 digits, hyphen allowed).");
-      return;
-    }
+    setState(() => _isSaving = true);
 
     try {
       await FirebaseFirestore.instance
@@ -222,30 +222,38 @@ class _EditShippingAddressPageState extends State<EditShippingAddressPage> {
           .doc(widget.addressId)
           .update({
         'fullname': fullName,
-        'phone': phone,                // NEW
+        'phone': phone,
         'address': address,
         'city': city,
         'region': region,
+        'regionKey': _normalizeRegionKey(region),
         'country': country,
         'zipcode': zipCode,
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      // ignore: use_build_context_synchronously
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Address updated successfully!")),
+        const SnackBar(content: Text('Address updated successfully.')),
       );
-
-      // ignore: use_build_context_synchronously
-      Navigator.pop(context);
-    } catch (e) {
-      // ignore: avoid_print
-      print("Error updating address: $e");
-      _showError("Error updating address. Please try again.");
+      Navigator.pop(context, true);
+    } catch (error) {
+      if (!mounted) return;
+      _showError('Could not update the address. Please try again.');
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
     }
   }
 
-  // Function to display error messages
+  String _friendlyError(Object error) {
+    return error
+        .toString()
+        .replaceFirst('Bad state: ', '')
+        .replaceFirst('Exception: ', '');
+  }
+
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.red),
@@ -253,20 +261,8 @@ class _EditShippingAddressPageState extends State<EditShippingAddressPage> {
   }
 
   @override
-  void dispose() {
-    _fullnameController.dispose();
-    _phoneController.dispose();        // NEW
-    _addressController.dispose();
-    _cityController.dispose();
-    _regionController.dispose();
-    _countryController.dispose();
-    _zipcodeController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (isLoading) {
+    if (_isLoading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
       );
@@ -274,76 +270,136 @@ class _EditShippingAddressPageState extends State<EditShippingAddressPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Edit Shipping Address"),
+        title: const Text('Edit Shipping Address'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: ListView(
-          children: [
-            TextField(
-              controller: _fullnameController,
-              decoration: const InputDecoration(labelText: "Full Name"),
-              textInputAction: TextInputAction.next,
-            ),
-            // NEW: phone field (required)
-            TextField(
-              controller: _phoneController,
-              keyboardType: TextInputType.phone,
-              inputFormatters: <TextInputFormatter>[
-                FilteringTextInputFormatter.allow(
-                  RegExp(r'[0-9+\-\s\(\)]'),
-                ),
-              ],
-              decoration: const InputDecoration(
-                labelText: "Phone Number *",
-                hintText: "+233541234567 or 0541234567",
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (_legacyRegion != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                border: Border.all(color: Colors.orange.shade300),
+                borderRadius: BorderRadius.circular(8),
               ),
-              textInputAction: TextInputAction.next,
+              child: Text(
+                'The saved region “$_legacyRegion” does not match the current '
+                'region list. Please select the correct region before saving.',
+                style: TextStyle(color: Colors.orange.shade900),
+              ),
             ),
-            TextField(
-              controller: _addressController,
-              decoration: const InputDecoration(labelText: "Address"),
-              textInputAction: TextInputAction.next,
-            ),
-            TextField(
-              controller: _cityController,
-              decoration: const InputDecoration(labelText: "City"),
-              textInputAction: TextInputAction.next,
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _regionController,
-                    decoration: const InputDecoration(labelText: "Region"),
-                    readOnly: true,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.search),
-                  onPressed: _showRegionPicker,
-                  tooltip: "Pick Region",
-                ),
-              ],
-            ),
-            TextField(
-              controller: _countryController,
-              decoration: const InputDecoration(labelText: "Country"),
-              textInputAction: TextInputAction.next,
-            ),
-            TextField(
-              controller: _zipcodeController,
-              decoration: const InputDecoration(labelText: "Zipcode"),
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _updateAddress,
-              child: const Text("Save Changes"),
-            ),
+            const SizedBox(height: 16),
           ],
-        ),
+          _buildTextField(
+            'Full Name',
+            _fullnameController,
+            keyboardType: TextInputType.name,
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            textInputAction: TextInputAction.next,
+            enabled: !_isSaving,
+            inputFormatters: <TextInputFormatter>[
+              FilteringTextInputFormatter.allow(
+                RegExp(r'[0-9+\-\s\(\)]'),
+              ),
+            ],
+            decoration: const InputDecoration(
+              labelText: 'Phone Number *',
+              hintText: '+233541234567 or 0541234567',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildTextField(
+            'Address',
+            _addressController,
+            keyboardType: TextInputType.streetAddress,
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 16),
+          _buildTextField(
+            'City',
+            _cityController,
+            keyboardType: TextInputType.text,
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue: _selectedRegion,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Region',
+              border: OutlineInputBorder(),
+            ),
+            items: _regions
+                .map(
+                  (region) => DropdownMenuItem<String>(
+                    value: region,
+                    child: Text(region),
+                  ),
+                )
+                .toList(),
+            onChanged: _isSaving
+                ? null
+                : (value) {
+                    setState(() {
+                      _selectedRegion = value;
+                      _legacyRegion = null;
+                    });
+                  },
+          ),
+          const SizedBox(height: 16),
+          _buildTextField(
+            'Country',
+            _countryController,
+            keyboardType: TextInputType.text,
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 16),
+          _buildTextField(
+            'Postal / Zip Code',
+            _zipcodeController,
+            keyboardType: TextInputType.text,
+            textInputAction: TextInputAction.done,
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: _isSaving ? null : _updateAddress,
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size.fromHeight(50),
+            ),
+            child: _isSaving
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Save Changes'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextField(
+    String label,
+    TextEditingController controller, {
+    TextInputType? keyboardType,
+    TextInputAction? textInputAction,
+  }) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      textInputAction: textInputAction,
+      enabled: !_isSaving,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
       ),
     );
   }

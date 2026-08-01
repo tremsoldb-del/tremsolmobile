@@ -1,7 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:pay_with_paystack/pay_with_paystack.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,7 +8,7 @@ import '../homescreen.dart';
 import 'payment_options.dart';
 import 'shipping_address/add_shipping_address.dart';
 import 'shipping_address/edit_shippingaddress.dart';
-import 'shop_screen.dart';
+import 'service/regional_shipping_fee_service.dart';
 
 
 class CheckoutPage extends StatefulWidget {
@@ -47,99 +46,107 @@ class _CheckoutPageState extends State<CheckoutPage> {
   void initState() {
     super.initState();
     _fetchUserData();
-    _fetchShippingFee();
     _calculateInitialTotalAmount();
     _loadCurrencyData();
+    _refreshShippingAddressAndFee();
+  }
 
-    _fetchShippingAddress();
+
+  @override
+  void dispose() {
+    _fullNameController.dispose();
+    _emailController.dispose();
+    _shippingAddressController.dispose();
+    _phoneController.dispose();
+    _orderNotesController.dispose();
+    super.dispose();
   }
 
 
 
-//added 27 04 2025
-bool _isLoading = false; // 1. Add this at the top of your StatefulWidget
+  bool _isLoading = false;
+  bool _isShippingDataLoading = true;
+  String? _shippingFeeError;
 
-  
-  
 //added 2-1-2024
 //updated 27 04 2025
 
 
-void _navigateToPaymentOptions() async {
-  final userId = FirebaseAuth.instance.currentUser?.uid;
-  if (userId == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("You need to be signed in to proceed.")),
-    );
-    return;
-  }
-
-  setState(() {
-    _isLoading = true; // 2. Start loading
-  });
-
-  try {
-    final querySnapshot = await FirebaseFirestore.instance
-        .collection('shippingaddress')
-        .where('uid', isEqualTo: userId)
-        .where('isDefault', isEqualTo: true)
-        .limit(1)
-        .get();
-
-    if (querySnapshot.docs.isEmpty) {
+  Future<void> _navigateToPaymentOptions() async {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("No default shipping address found.")),
+        const SnackBar(content: Text('You need to be signed in to proceed.')),
       );
-      setState(() {
-        _isLoading = false;
-      });
       return;
     }
 
-    final defaultAddress = querySnapshot.docs.first.data();
+    if (_isLoading) return;
 
-    final shippingAddress = [
-      defaultAddress['address'] ?? '',
-      defaultAddress['city'] ?? '',
-      defaultAddress['region'] ?? '',
-      defaultAddress['zipcode'] ?? '',
-      defaultAddress['country'] ?? '',
-    ].where((field) => field.isNotEmpty).join(', ');
+    setState(() => _isLoading = true);
 
-    final userRegion = defaultAddress['region'] ?? '';
+    try {
+      final isReady = await _refreshShippingAddressAndFee(
+        showErrors: true,
+      );
 
-    setState(() {
-      _isLoading = false; // 3. Stop loading before navigating
-    });
+      if (!isReady || !mounted) return;
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PaymentOptionsPage(
-          region: userRegion,
-          totalAmount: widget.tAmount,
-          shippingFee: shippingFee,
-          orderNotes: _orderNotesController.text,
-          shippingAddress: shippingAddress,
-          
+      final currentAddress = _shippingAddress;
+      if (currentAddress == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please add and select a default shipping address.'),
+          ),
+        );
+        return;
+      }
+
+      final shippingAddress = [
+        currentAddress['address'] ?? '',
+        currentAddress['city'] ?? '',
+        currentAddress['region'] ?? '',
+        currentAddress['zipcode'] ?? '',
+        currentAddress['country'] ?? '',
+      ]
+          .map((value) => value.toString().trim())
+          .where((value) => value.isNotEmpty)
+          .join(', ');
+
+      final userRegion =
+          (currentAddress['region'] ?? '').toString().trim();
+      final shippingCountry =
+          (currentAddress['country'] ?? '').toString().trim();
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => PaymentOptionsPage(
+            region: userRegion,
+            shippingCountry: shippingCountry,
+            totalAmount: widget.tAmount,
+            shippingFee: shippingFee,
+            orderNotes: _orderNotesController.text.trim(),
+            shippingAddress: shippingAddress,
+          ),
         ),
-      ),
-    );
-  } catch (e) {
-    setState(() {
-      _isLoading = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Error fetching default address: $e")),
-    );
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_friendlyError(error)),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
-}
 
- 
-
-
-
-  //added 08-12-2024
+//added 08-12-2024
   //amended 28 -11- 2025
  bool _currencyLoaded = false;
 
@@ -150,6 +157,7 @@ Future<void> _loadCurrencyData() async {
   final selected = prefs.getString('selectedCurrency') ?? base;
   final rate = prefs.getDouble('conversionRate') ?? 1.0;
 
+  if (!mounted) return;
   setState(() {
     currencySymbol = selected;  // 👈 show user’s chosen currency code
     exchangeRate = rate;        // 👈 base → selected
@@ -187,6 +195,7 @@ Future<void> _loadCurrencyData() async {
         _shippingAddressController.text = userData['shippingaddress'] ?? '';
         _phoneController.text = userData['phone'] ?? '';
 
+        if (!mounted) return;
         setState(() {
           _hasShippingAddress = userData['shippingaddress'] != null &&
               userData['shippingaddress'] != '';
@@ -197,52 +206,108 @@ Future<void> _loadCurrencyData() async {
 
  
  
-  Future<void> _fetchShippingFee() async {
-    DocumentSnapshot settingsDoc = await FirebaseFirestore.instance
-        .collection('settings')
-        .doc('doc1')
-        .get();
-        
-    // setState(() {
-    //   shippingFee = settingsDoc['shipping_fee']?.toDouble() ?? 0.0;
-    // }
-    
-    // );
+  Future<bool> _refreshShippingAddressAndFee({
+    bool showErrors = false,
+  }) async {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
 
+    if (userId == null) {
+      if (!mounted) return false;
+      setState(() {
+        _shippingAddress = null;
+        shippingFee = 0;
+        _shippingFeeError = 'You need to be signed in to continue.';
+        _isShippingDataLoading = false;
+      });
+      return false;
+    }
 
-    setState(() {
-  final v = settingsDoc['shipping_fee'];
-  shippingFee = v is num
-      ? v.toDouble()
-      : (v is String ? double.tryParse(v.replaceAll(RegExp(r'[^0-9\.\-]'), '')) ?? 0.0 : 0.0);
-});
+    if (mounted) {
+      setState(() {
+        _isShippingDataLoading = true;
+        _shippingFeeError = null;
+      });
+    }
 
+    try {
+      final addressSnapshot = await FirebaseFirestore.instance
+          .collection('shippingaddress')
+          .where('uid', isEqualTo: userId)
+          .where('isDefault', isEqualTo: true)
+          .limit(1)
+          .get();
+
+      if (addressSnapshot.docs.isEmpty) {
+        if (!mounted) return false;
+        setState(() {
+          _shippingAddress = null;
+          shippingFee = 0;
+          _shippingFeeError = null;
+          _isShippingDataLoading = false;
+        });
+        return false;
+      }
+
+      final addressDocument = addressSnapshot.docs.first;
+      final addressData = addressDocument.data();
+      final region = (addressData['region'] ?? '').toString().trim();
+
+      if (region.isEmpty) {
+        throw StateError(
+          'The default shipping address does not have a valid region.',
+        );
+      }
+
+      final regionalFee =
+          await RegionalShippingFeeService.fetchFeeForRegion(region);
+
+      if (!mounted) return false;
+      setState(() {
+        _shippingAddress = {
+          'fullname': addressData['fullname'] ?? '',
+          'id': (addressData['id'] ?? addressDocument.id).toString(),
+          'address': addressData['address'] ?? '',
+          'city': addressData['city'] ?? '',
+          'region': region,
+          'regionKey':
+              RegionalShippingFeeService.normalizeRegionKey(region),
+          'zipcode': addressData['zipcode'] ?? '',
+          'country': addressData['country'] ?? '',
+          'phone': addressData['phone'] ?? '',
+        };
+        shippingFee = regionalFee;
+        _shippingFeeError = null;
+        _isShippingDataLoading = false;
+      });
+      return true;
+    } catch (error) {
+      final message = _friendlyError(error);
+
+      if (!mounted) return false;
+      setState(() {
+        shippingFee = 0;
+        _shippingFeeError = message;
+        _isShippingDataLoading = false;
+      });
+
+      if (showErrors) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    }
   }
 
-//   Future<void> _fetchShippingFee() async {
-//   final doc = await FirebaseFirestore.instance
-//       .collection('settings')
-//       .doc('doc1')
-//       .get();
-
-//   final data = doc.data() as Map<String, dynamic>?;
-//   double fee = 0.0;
-
-//   if (data != null) {
-//     final raw = data['shipping_fee'];
-
-//     if (raw is num) {
-//       fee = raw.toDouble();
-//     } else if (raw is String) {
-//       // remove currency/commas/spaces if any, then parse
-//       final cleaned = raw.replaceAll(RegExp(r'[^0-9\.\-]'), '');
-//       fee = double.tryParse(cleaned) ?? 0.0;
-//     } // else keep 0.0
-//   }
-
-//   setState(() => shippingFee = fee);
-// }
-
+  String _friendlyError(Object error) {
+    return error
+        .toString()
+        .replaceFirst('Bad state: ', '')
+        .replaceFirst('Exception: ', '');
+  }
 
   Future<void> _calculateInitialTotalAmount() async {
     final userId = FirebaseAuth.instance.currentUser?.uid;
@@ -259,175 +324,10 @@ Future<void> _loadCurrencyData() async {
       newTotalAmount += (data['totalPrice'] ?? 0.0).toDouble();
     }
 
+    if (!mounted) return;
     setState(() {
       totalAmount = newTotalAmount;
     });
-  }
-
-  Future<void> _processPayment() async {
-    final email = _emailController.text;
-    final orderNotes = _orderNotesController.text;
-
-    if (email.isEmpty) {
-      _showSnackbar('Please fill in all fields');
-      return;
-    }
-
-    final uniqueTransRef = PayWithPayStack().generateUuidV4();
-
-    PayWithPayStack().now(
-      context: context,
-      secretKey: "sk_test_b39874d55f8ee9be128b489a7fd99ec8e01a9036",
-      customerEmail: email,
-      reference: uniqueTransRef,
-      currency: "GHS",
-      amount: (totalAmount - (totalAmount - widget.tAmount) + shippingFee),
-      callbackUrl: 'https://your.callback.url',
-      transactionCompleted: () async {
-        print("Transaction Successful");
-        await _moveCartItemsToOrders(orderNotes);
-     //==   sendEmailFromFirestore() ;
-    //     sendEmailFromFirestore(  orderNumber: 'orderId',
-    //  userName: 'userName');
-        _navigateToSuccessScreen();
-        
-      },
-      transactionNotCompleted: () {
-        print("Transaction Not Successful!");
-      },
-    );
-  }
-
-     //added 27-12-2024
-  String _capitalizeFirstLetter(String input) {
-    if (input.isEmpty) return ''; // Handle empty string case
-
-    return input
-        .split(' ')
-        .where((word) => word.isNotEmpty) // Ensure empty words are removed
-        .map((word) => word[0].toUpperCase() + word.substring(1))
-        .join(' ');
-  }
-
-
-  //added 13 04 2025
-Future<void> _moveCartItemsToOrders(String orderNotes) async {
-  final user = FirebaseAuth.instance.currentUser;
-  final userId = user?.uid;
-  final userEmail = user?.email;
-
-  if (userId == null || userEmail == null) return;
-
-  // Fetch the user's cart items
-  final cartItems = await FirebaseFirestore.instance
-      .collection('cartitems')
-      .where('userId', isEqualTo: userId)
-      .get();
-
-  if (cartItems.docs.isEmpty) {
-    print('No items in the cart to move.');
-    return;
-  }
-
-  // Prepare the items for the order
-  final List<Map<String, dynamic>> items = cartItems.docs.map((doc) => doc.data()).toList();
-
-  // Create an order in the 'ordersitems' collection
-  final orderRef = await FirebaseFirestore.instance.collection('ordersitems').add({
-    'userId': userId,
-    'email': userEmail,
-    'totalAmount': totalAmount, // assume this is defined in your widget
-    'shippingFee': shippingFee, // assume this is defined in your widget
-    'orderNotes': orderNotes,
-    'status': 'Processing',
-    'items': items,
-    'timestamp': Timestamp.now(),
-  });
-
-  // Add the orderId field using the generated document ID
-  final orderId = orderRef.id;
-  await orderRef.update({'orderId': orderId});
-
-  // Clear the cart
-  final batch = FirebaseFirestore.instance.batch();
-  for (var item in cartItems.docs) {
-    batch.delete(item.reference);
-  }
-  await batch.commit();
-
-  print('Cart items moved to orders and cleared successfully.');
-
-  // 🔍 Fetch username from 'users' collection
-  String userName = 'Customer';
-  final userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
-  if (userDoc.exists && userDoc.data()!.containsKey('username')) {
-    userName = userDoc['username'];
-  }
-
-
-}
-
-
- /*==Future<void> sendEmailFromFirestore() async {
-    try {
-      // 🔐 Step 1: Get SMTP email & password from Firestore
-      final docSnapshot = await FirebaseFirestore.instance
-          .collection('settings')
-          .doc('doc3')
-          .get();
-
-      if (!docSnapshot.exists) {
-        print("Settings document not found.");
-        return;
-      }
-
-      final data = docSnapshot.data()!;
-      final String email = data['email'];
-      final String password = data['pass'];
-
-      // 📬 Step 2: Set up SMTP server
-      final smtpServer = SmtpServer(
-  'smtp.gmail.com',
-  port: 465,
-  username: email,
-  password: password,
-  ssl: true, // <- Use SSL
-);
-
-
-      // 📧 Step 3: Create email message
-      final message = Message()
-        ..from = Address(email, 'Tremsol')
-        ..recipients.add('eganeboe@gmail.com')
-        ..subject = 'Order Request'
-        ..text = 'Hello, I would like to place an order.';
-
-      // 🚀 Step 4: Send the email
-      final sendReport = await send(message, smtpServer);
-      print('Message sent: ' + sendReport.toString());
-    } on MailerException catch (e) {
-      print('Failed to send email: $e');
-    } catch (e) {
-      print('Error: $e');
-    }
-  }*/
-
-
-
- 
-
-
-
-
-
-
-  //=================
-
-  void _navigateToSuccessScreen() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const PaymentSuccessScreen()),
-    );
   }
 
   void _showSnackbar(String message) {
@@ -435,58 +335,34 @@ Future<void> _moveCartItemsToOrders(String orderNotes) async {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  //added 1-1-24
-  Future<void> _fetchShippingAddress() async {
-    final userId = FirebaseAuth.instance.currentUser?.uid;
-    if (userId != null) {
-      QuerySnapshot shippingDocs = await FirebaseFirestore.instance
-          .collection('shippingaddress')
-          .where('uid', isEqualTo: userId)
-          .where('isDefault', isEqualTo: true)
-          .get();
-
-      if (shippingDocs.docs.isNotEmpty) {
-        final shippingData =
-            shippingDocs.docs.first.data() as Map<String, dynamic>;
-
-        setState(() {
-          _shippingAddress = {
-            'fullname': shippingData['fullname'] ?? '',
-            'id': shippingData['id'] ?? '',
-            'address': shippingData['address'] ?? '',
-            'city': shippingData['city'] ?? '',
-            'region': shippingData['region'] ?? '',
-            'zipcode': shippingData['zipcode'] ?? '',
-            'country': shippingData['country'] ?? '',
-          };
-        });
-      } else {
-        setState(() {
-          _shippingAddress = null;
-        });
-      }
-    }
-  }
+  // Shipping address and its regional fee are refreshed together.
 
   Widget _buildShippingAddressSection() {
+    if (_isShippingDataLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     if (_shippingAddress == null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // const Text(
-          //   'Shipping Address',
-          //   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          // ),
           const SizedBox(height: 10),
           const Text('No default shipping address found.'),
           TextButton(
-            onPressed: () {
-              Navigator.push(
+            onPressed: () async {
+              final wasAdded = await Navigator.push<bool>(
                 context,
                 MaterialPageRoute(
                   builder: (context) => const AddShippingAddressPage(),
                 ),
               );
+
+              if (wasAdded == true) {
+                await _refreshShippingAddressAndFee(showErrors: true);
+              }
             },
             child: const Text('Add Address'),
           ),
@@ -494,68 +370,100 @@ Future<void> _moveCartItemsToOrders(String orderNotes) async {
       );
     }
 
-    // Safely check and display the shipping address
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _shippingAddress!['fullname'] ?? 'No Name',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        (_shippingAddress!['fullname'] ?? 'No Name')
+                            .toString(),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        (_shippingAddress!['address'] ?? 'No Address')
+                            .toString(),
+                      ),
+                      Text(
+                        '${_shippingAddress!['city'] ?? 'No City'}, '
+                        '${_shippingAddress!['region'] ?? 'No Region'} '
+                        '${_shippingAddress!['zipcode'] ?? ''}',
+                      ),
+                      Text(
+                        (_shippingAddress!['country'] ?? 'No Country')
+                            .toString(),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 5),
-                  Text(_shippingAddress!['address'] ?? 'No Address'),
-                  Text(
-                    '${_shippingAddress!['city'] ?? 'No City'}, '
-                    '${_shippingAddress!['region'] ?? 'No Region'} '
-                    '${_shippingAddress!['zipcode'] ?? 'No Zipcode'}',
-                  ),
-                  Text(_shippingAddress!['country'] ?? 'No Country'),
-                ],
-              ),
-            ),
-            TextButton(
-              onPressed: () {
-                // Check for the existence of 'id' and handle null
-                final addressId = _shippingAddress!['id'];
-                if (addressId == null || addressId.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Address ID is missing or invalid."),
-                    ),
-                  );
-                  return;
-                }
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final addressId =
+                        (_shippingAddress!['id'] ?? '').toString();
 
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => EditShippingAddressPage(
-                      addressId: addressId,
-                    ),
+                    if (addressId.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Address ID is missing or invalid.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+
+                    final wasUpdated = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => EditShippingAddressPage(
+                          addressId: addressId,
+                        ),
+                      ),
+                    );
+
+                    if (wasUpdated == true) {
+                      await _refreshShippingAddressAndFee(
+                        showErrors: true,
+                      );
+                    }
+                  },
+                  child: const Text(
+                    'Change',
+                    style: TextStyle(color: Colors.red),
                   ),
-                );
-              },
-              child: const Text(
-                'Change',
-                style: TextStyle(color: Colors.red),
-              ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        if (_shippingFeeError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            _shippingFeeError!,
+            style: const TextStyle(
+              color: Colors.red,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ],
     );
   }
 
@@ -846,11 +754,23 @@ CachedNetworkImage(
                         color: Colors.green),
                   ),
                   Text(
-                    // 'Shipping Fee : $currencySymbol ${_convertPrice(shippingFee).toStringAsFixed(2)}',
-                    'Shipping Fee : $currencySymbol ${NumberFormat("#,##0.00").format(_convertPrice(shippingFee))}',
-                    style:
-                        const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    _isShippingDataLoading
+                        ? 'Shipping Fee: Loading...'
+                        : 'Shipping Fee (${_shippingAddress?['region'] ?? 'Region'}): '
+                            '$currencySymbol ${NumberFormat("#,##0.00").format(_convertPrice(shippingFee))}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
+                  if (_shippingFeeError != null)
+                    Text(
+                      _shippingFeeError!,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Colors.red,
+                      ),
+                    ),
                   Text(
           
                     'Total : $currencySymbol ${NumberFormat("#,##0.00").format(_convertPrice(totalAmount - (totalAmount - widget.tAmount) + shippingFee))}',
@@ -883,9 +803,12 @@ CachedNetworkImage(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: ElevatedButton(
-              onPressed: () {
-            _navigateToPaymentOptions();
-          },         
+            onPressed: (_isLoading ||
+                    _isShippingDataLoading ||
+                    _shippingFeeError != null ||
+                    _shippingAddress == null)
+                ? null
+                : _navigateToPaymentOptions,
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               backgroundColor: const Color(0xFFFFA500),
@@ -1045,40 +968,5 @@ CachedNetworkImage(
       print('Error fetching product minimum quantity: $e');
     }
     return 1;
-  }
-}
-
-// Payment success screen
-class PaymentSuccessScreen extends StatelessWidget {
-  const PaymentSuccessScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Payment Successful'),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text(
-              'Thank you for your purchase!',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => const ShopScreen()),
-                );
-              },
-              child: const Text('Buy Again'),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
