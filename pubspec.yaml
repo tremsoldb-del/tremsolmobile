@@ -3,7 +3,7 @@ description: "A new Flutter project."
 
 publish_to: "none"
 
-version: 1.0.12+13
+version: 1.0.5+13
 
 environment:
   sdk: ^3.5.3
@@ -76,6 +76,7 @@ dependencies:
   timezone: ^0.10.0
   onesignal_flutter: ^5.6.5
   flutter_app_badger: ^1.5.0
+  device_info_plus: ^12.4.0
 
 dev_dependencies:
   flutter_test:
