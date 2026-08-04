@@ -1,60 +1,55 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart';
+import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tremsolapp/auth/post_login_bootstrap.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
+import '../currency/currencycon.dart';
 import '../homescreen.dart';
 import 'forgot_password.dart';
 import 'google_signin.dart';
+import 'post_login_bootstrap.dart';
 import 'signup_screen.dart';
-import '../currency/currencycon.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
 
   @override
-  _SignInScreenState createState() => _SignInScreenState();
+  State<SignInScreen> createState() => _SignInScreenState();
 }
 
 class _SignInScreenState extends State<SignInScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
-  // Save FCM token to Firestore
-  Future<void> saveFcmToken(String userId) async {
-    FirebaseMessaging messaging = FirebaseMessaging.instance;
-    String? token = await messaging.getToken();
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
 
-    await FirebaseFirestore.instance.collection('users').doc(userId).update({
-      'fcmToken': token,
-    });
-    }
-
-  void signInUser() async {
+  Future<void> signInUser() async {
     try {
-      final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // Ensure required data exists before any screen reads it
+      // Refresh current app/device information and fill every missing field
+      // before any Tremsol screen reads the user document.
       await postLoginBootstrap();
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('isSignedIn', true);
 
-      // Handle first access once here
-      bool isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
+      final isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
       if (isFirstAccess) {
         await prefs.setBool('isFirstAccess', false);
       }
@@ -63,152 +58,157 @@ class _SignInScreenState extends State<SignInScreen> {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) =>
-              isFirstAccess ? const CurrencyConverterScreen() : const HomeScreen(),
+          builder: (_) => isFirstAccess
+              ? const CurrencyConverterScreen()
+              : const HomeScreen(),
         ),
       );
-    } on FirebaseAuthException catch (e) {
+    } on FirebaseAuthException catch (error) {
       String errorMessage;
-      switch (e.code) {
+      switch (error.code) {
         case 'invalid-email':
-          errorMessage = "Invalid email format. Please check your email.";
+          errorMessage = 'Invalid email format. Please check your email.';
           break;
         case 'user-disabled':
-          errorMessage = "This account has been disabled. Contact support.";
+          errorMessage = 'This account has been disabled. Contact support.';
           break;
         case 'user-not-found':
-          errorMessage = "No account found with this email.";
+          errorMessage = 'No account found with this email.';
           break;
         case 'wrong-password':
-          errorMessage = "Incorrect password. Please try again.";
+        case 'invalid-credential':
+          errorMessage = 'Incorrect email or password. Please try again.';
           break;
         case 'too-many-requests':
-          errorMessage = "Too many failed attempts. Try again later.";
+          errorMessage = 'Too many failed attempts. Try again later.';
           break;
         case 'network-request-failed':
-          errorMessage = "Network error. Check your connection.";
+          errorMessage = 'Network error. Check your connection.';
           break;
         default:
-          errorMessage = "Sign-in failed. Please try again.";
+          errorMessage = 'Sign-in failed. Please try again.';
       }
+
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(errorMessage)));
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(errorMessage)));
       }
-    } catch (_) {
+    } catch (error, stackTrace) {
+      debugPrint('Email sign-in error: $error');
+      debugPrintStack(stackTrace: stackTrace);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("An unexpected error occurred.")),
+          const SnackBar(content: Text('An unexpected error occurred.')),
         );
       }
     }
   }
 
   static Future<void> signInWithFacebook(BuildContext context) async {
+    BuildContext? dialogContext;
+
     try {
-      // Show progress indicator while signing in
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) {
-          return const Center(
-            child: CircularProgressIndicator(),
-          );
+        builder: (ctx) {
+          dialogContext = ctx;
+          return const Center(child: CircularProgressIndicator());
         },
       );
 
-      // Trigger the Facebook sign-in flow
-      final LoginResult loginResult = await FacebookAuth.instance.login();
-
-      if (loginResult.status == LoginStatus.success) {
-        // Extract the access token
-        // Create a credential from the access token
-        final OAuthCredential facebookAuthCredential =
-            FacebookAuthProvider.credential(
-                loginResult.accessToken!.tokenString);
-
-        // Sign in with the credential
-        UserCredential userCredential = await FirebaseAuth.instance
-            .signInWithCredential(facebookAuthCredential);
-
-        // Extract user info
-        String? username = userCredential.user?.displayName;
-        String? email = userCredential.user?.email;
-        String? photoURL = userCredential.user?.photoURL;
-        String? uid = userCredential.user?.uid; // User UID
-
-        // Check if user already exists in Firestore
-        DocumentSnapshot userDoc =
-            await FirebaseFirestore.instance.collection('users').doc(uid).get();
-
-        if (!userDoc.exists) {
-          // Save user data to Firestore (first-time login only)
-          await FirebaseFirestore.instance.collection('users').doc(uid).set({
-            'username': username,
-            'email': email,
-            'profilepic': photoURL,
-            'uid': uid, // Save UID in Firestore
-            //newly added
-            "country": "",
-            "isActive": true,
-            "lastOnline": Timestamp.now(),
-          });
+      final loginResult = await FacebookAuth.instance.login();
+      if (loginResult.status != LoginStatus.success ||
+          loginResult.accessToken == null) {
+        if (dialogContext != null && dialogContext!.mounted) {
+          Navigator.pop(dialogContext!);
         }
 
-        // Save sign-in state
-        SharedPreferences prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('isSignedIn', true);
-
-        // Check if it's the user's first access
-        bool isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
-
-        Navigator.pop(context); // Close the progress indicator dialog
-
-        if (isFirstAccess) {
-          await prefs.setBool('isFirstAccess', false);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const CurrencyConverterScreen()),
-          );
-        } else {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
+        if (context.mounted && loginResult.status != LoginStatus.cancelled) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                loginResult.message ?? 'Facebook sign-in was not completed.',
+              ),
+            ),
           );
         }
-      } else {
-        Navigator.pop(context); // Close the progress indicator dialog
-        // Handle unsuccessful login
-        debugPrint('Facebook Login Failed: ${loginResult.message}');
+        return;
+      }
+
+      final credential = FacebookAuthProvider.credential(
+        loginResult.accessToken!.tokenString,
+      );
+      final userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
+      final user = userCredential.user;
+
+      if (user == null) {
+        throw FirebaseAuthException(
+          code: 'null-user',
+          message: 'Facebook sign-in returned no Firebase user.',
+        );
+      }
+
+      await postLoginBootstrap(
+        fullName: user.displayName,
+        username: user.displayName,
+        profilePic: user.photoURL,
+        captureSignupSnapshot:
+            userCredential.additionalUserInfo?.isNewUser ?? false,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isSignedIn', true);
+      final isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
+      if (isFirstAccess) {
+        await prefs.setBool('isFirstAccess', false);
+      }
+
+      if (dialogContext != null && dialogContext!.mounted) {
+        Navigator.pop(dialogContext!);
+      }
+      if (!context.mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => isFirstAccess
+              ? const CurrencyConverterScreen()
+              : const HomeScreen(),
+        ),
+      );
+    } catch (error, stackTrace) {
+      if (dialogContext != null && dialogContext!.mounted) {
+        Navigator.pop(dialogContext!);
+      }
+      debugPrint('Facebook sign-in error: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Facebook Login Failed: ${loginResult.message}'),
+          const SnackBar(
+            content: Text('Facebook sign-in failed. Please try again.'),
           ),
         );
       }
-    } catch (e) {
-      Navigator.pop(context); // Close the progress indicator dialog
-      // Handle exceptions
-      debugPrint('Error during Facebook Login: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error during Facebook Login: $e')),
-      );
     }
   }
 
-//16 04 2025
   String generateNonce([int length = 32]) {
     const charset =
         '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
     final random = Random.secure();
-    return List.generate(length, (_) => charset[random.nextInt(charset.length)])
-        .join();
+    return List.generate(
+      length,
+      (_) => charset[random.nextInt(charset.length)],
+    ).join();
   }
 
   String sha256ofString(String input) {
     final bytes = utf8.encode(input);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
+    return sha256.convert(bytes).toString();
   }
 
   Future<void> signInWithApple() async {
@@ -219,16 +219,15 @@ class _SignInScreenState extends State<SignInScreen> {
       final appleCredential = await SignInWithApple.getAppleIDCredential(
         scopes: [
           AppleIDAuthorizationScopes.email,
-          AppleIDAuthorizationScopes.fullName
+          AppleIDAuthorizationScopes.fullName,
         ],
         nonce: nonce,
       );
 
-      final oauthCredential = OAuthProvider("apple.com").credential(
+      final oauthCredential = OAuthProvider('apple.com').credential(
         idToken: appleCredential.identityToken,
         rawNonce: rawNonce,
-
-        accessToken: appleCredential.authorizationCode, //new line added
+        accessToken: appleCredential.authorizationCode,
       );
 
       final userCredential =
@@ -236,57 +235,29 @@ class _SignInScreenState extends State<SignInScreen> {
       final user = userCredential.user;
       if (user == null) {
         throw FirebaseAuthException(
-            code: 'null-user', message: 'No user from Apple credential');
+          code: 'null-user',
+          message: 'Apple sign-in returned no Firebase user.',
+        );
       }
 
-      // Ensure user doc, lastOnline, token, etc.
-      await postLoginBootstrap();
-
-      // Seed/merge profile fields if first-time Apple login
-      final uid = user.uid;
-      final name =
-          "${appleCredential.givenName ?? ''} ${appleCredential.familyName ?? ''}"
+      // Apple normally supplies the name only on the first authorization, so
+      // pass it immediately and let the bootstrap preserve it thereafter.
+      final appleName =
+          '${appleCredential.givenName ?? ''} ${appleCredential.familyName ?? ''}'
               .trim();
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'fullname': name.isNotEmpty ? name : (user.displayName ?? 'Apple User'),
-        'email': user.email ?? appleCredential.email,
-        'profilepic': user.photoURL,
-        'isWebuser': false,
-        'isActive': true,
-        'role': 1,
-        'platform': 'web',
-        'createdAt': Timestamp.now(),
-        'timestamp': Timestamp.now(),
-        'lastOnline':Timestamp.now(),
-        // NEW
-        'ordersCount': 0,
-        'firstOrderAt': null,
-        'lastOrderAt': null,
-        'codFailureCount': 0,
-        'codSuspended': false,
-        'codPhoneVerified': false,
-        'codVerifiedPhone': '',
-        'country': '',
-        'region': '',
-        'shippingaddress': '',
-        'fcmToken': '',
-      }, SetOptions(merge: true));
+      final resolvedName = appleName.isNotEmpty ? appleName : user.displayName;
 
-//added 02 10 2025
-// Step 4: Save FCM token to Firestore
-final fcmToken = await FirebaseMessaging.instance.getToken();
-if (fcmToken != null) {
-  await FirebaseFirestore.instance
-      .collection('users')
-      .doc(userCredential.user!.uid)
-      .update({'fcmToken': fcmToken});
-}
-
+      await postLoginBootstrap(
+        fullName: resolvedName,
+        username: resolvedName,
+        profilePic: user.photoURL,
+        captureSignupSnapshot:
+            userCredential.additionalUserInfo?.isNewUser ?? false,
+      );
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('isSignedIn', true);
-
-      bool isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
+      final isFirstAccess = prefs.getBool('isFirstAccess') ?? true;
       if (isFirstAccess) {
         await prefs.setBool('isFirstAccess', false);
       }
@@ -295,22 +266,23 @@ if (fcmToken != null) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) =>
-              isFirstAccess ? const CurrencyConverterScreen() : const HomeScreen(),
+          builder: (_) => isFirstAccess
+              ? const CurrencyConverterScreen()
+              : const HomeScreen(),
         ),
       );
-    } catch (e) {
-      debugPrint("Apple Sign-In Error: $e");
+    } catch (error, stackTrace) {
+      debugPrint('Apple Sign-In Error: $error');
+      debugPrintStack(stackTrace: stackTrace);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Apple Sign-In failed. Please try again.')),
+            content: Text('Apple Sign-In failed. Please try again.'),
+          ),
         );
       }
     }
   }
-
-//16 04 2025
 
 //added 08 -12 - 2024
   bool _isObscured = true;

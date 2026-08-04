@@ -1,18 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="Tremsol"
+        android:label="tremsol"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        
-<meta-data
-    android:name="com.google.firebase.messaging.default_notification_channel_id"
-    android:value="tremsol_high" />
-
-
-
         <activity
-        android:screenOrientation="portrait"
-
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
@@ -39,17 +30,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-
-             <meta-data
-    android:name="com.facebook.sdk.ApplicationId"
-    android:value="@string/facebook_app_id" />
-
-   <meta-data android:name="com.facebook.sdk.ClientToken" android:value="@string/facebook_client_token"/>
-
-   <meta-data
-        android:name="com.google.android.gms.wallet.api.enabled"
-        android:value="true" />
-
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -61,7 +41,5 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-           <!-- 👇 Add this -->
-    <package android:name="com.android.vending" />
     </queries>
 </manifest>

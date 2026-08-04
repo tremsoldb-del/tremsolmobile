@@ -515,54 +515,12 @@ try {
   }
 }*/
 
-  Future<void> _openAdProduct(
-    BuildContext dialogContext,
-    String productId,
-  ) async {
-    // Close the advert before opening the product details page.
-    Navigator.of(dialogContext).pop();
-
-    // Allow the dialog route to finish closing before pushing a new route.
-    await Future<void>.delayed(Duration.zero);
-
-    if (!mounted) return;
-
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ProductDetailsScreen(productId: productId),
-      ),
-    );
-  }
-
   void _showAdModal(Map<String, dynamic> ad) {
-    final String? productId = ad['productId']?.toString().trim();
-    final bool hasLinkedProduct =
-        productId != null && productId.isNotEmpty;
-
     showDialog(
       context: context,
       barrierDismissible: true,
       barrierColor: Colors.black.withOpacity(0.72),
-      builder: (dialogContext) {
-        final double advertHeight =
-            MediaQuery.of(dialogContext).size.height * 0.52;
-
-        final Widget advertImage = ad['image'] != null
-            ? CachedNetworkImage(
-                imageUrl: ad['image'].toString(),
-                fit: BoxFit.contain,
-                width: double.infinity,
-                height: advertHeight,
-                placeholder: (context, url) =>
-                    _premiumLoader(height: advertHeight),
-                errorWidget: (context, url, error) =>
-                    _networkImageFallback(iconSize: 50),
-              )
-            : SizedBox(
-                height: advertHeight,
-                child: _networkImageFallback(iconSize: 50),
-              );
-
+      builder: (context) {
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(horizontal: 24),
           backgroundColor: Colors.transparent,
@@ -586,20 +544,19 @@ try {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      // An advert without productId remains a normal,
-                      // non-clickable image.
-                      onTap: hasLinkedProduct
-                          ? () => _openAdProduct(
-                                dialogContext,
-                                productId!,
-                              )
-                          : null,
-                      child: advertImage,
-                    ),
-                  ),
+                  child: ad['image'] != null
+                      ? CachedNetworkImage(
+                          imageUrl: ad['image'],
+                          fit: BoxFit.contain,
+                          width: double.infinity,
+                          height: MediaQuery.of(context).size.height * 0.52,
+                          placeholder: (context, url) => _premiumLoader(
+                            height: MediaQuery.of(context).size.height * 0.52,
+                          ),
+                          errorWidget: (context, url, error) =>
+                              _networkImageFallback(iconSize: 50),
+                        )
+                      : _networkImageFallback(iconSize: 50),
                 ),
               ),
               Positioned(
@@ -610,16 +567,13 @@ try {
                   shape: const CircleBorder(),
                   elevation: 8,
                   child: InkWell(
-                    onTap: () => Navigator.of(dialogContext).pop(),
+                    onTap: () => Navigator.of(context).pop(),
                     customBorder: const CircleBorder(),
                     child: const SizedBox(
                       width: 42,
                       height: 42,
-                      child: Icon(
-                        Icons.close_rounded,
-                        color: Colors.white,
-                        size: 22,
-                      ),
+                      child: Icon(Icons.close_rounded,
+                          color: Colors.white, size: 22),
                     ),
                   ),
                 ),
@@ -1650,7 +1604,6 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
 
 //END OF THE MAIN PART
   Widget _buildDealsSection(String dealTag, BuildContext context) {
-    final endTime = DateTime.now().add(const Duration(hours: 2));
     final flashAccent =
         _sectionAccent('flash', const Color(0xFFE5484D));
 
@@ -1707,65 +1660,7 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
                         ),
                       ),
                       const SizedBox(height: 5),
-                      StreamBuilder<int>(
-                        stream: Stream.periodic(
-                          const Duration(seconds: 1),
-                          (i) {
-                            final remaining =
-                                endTime.difference(DateTime.now()).inSeconds;
-                            return remaining > 0 ? remaining : 0;
-                          },
-                        ),
-                        builder: (context, snapshot) {
-                          if (!snapshot.hasData || snapshot.data == 0) {
-                            return const Text(
-                              'Sale ended',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            );
-                          }
-
-                          final seconds = snapshot.data!;
-                          final hours = seconds ~/ 3600;
-                          final minutes = (seconds % 3600) ~/ 60;
-                          final secs = seconds % 60;
-
-                          return Row(
-                            children: [
-                              const Text(
-                                'ENDS IN  ',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 9,
-                                  vertical: 5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}',
-                                  style: const TextStyle(
-                                    color: _premiumNavy,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w800,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
+                      const _FlashDealsCountdown(),
                     ],
                   ),
                 ),
@@ -2389,16 +2284,23 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
             errorWidget: (context, url, error) =>
                 _networkImageFallback(iconSize: 40),
           ),
-          Positioned.fill(
+          // Keep almost the whole category image visible. The dark scrim
+          // is deliberately restricted to a very short strip at the bottom.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 38,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  stops: const [0.60, 1.0],
+                  stops: const [0.0, 0.55, 1.0],
                   colors: [
                     Colors.transparent,
-                    _premiumNavy.withOpacity(0.82),
+                    _premiumNavy.withOpacity(0.46),
+                    _premiumNavy.withOpacity(0.92),
                   ],
                 ),
               ),
@@ -2407,24 +2309,28 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
           Positioned(
             left: 8,
             right: 8,
-            bottom: 10,
-            child: Text(
-              categoryName,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11.5,
-                height: 1.2,
-                fontWeight: FontWeight.w800,
-                shadows: [
-                  Shadow(
-                    color: Colors.black26,
-                    blurRadius: 8,
-                    offset: Offset(0, 2),
-                  ),
-                ],
+            bottom: 7,
+            height: 20,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                categoryName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11.5,
+                  height: 1,
+                  fontWeight: FontWeight.w800,
+                  shadows: [
+                    Shadow(
+                      color: Colors.black38,
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -2618,6 +2524,124 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
           },
         );
       }).toList(),
+    );
+  }
+}
+
+/// A lifecycle-aware, repeating two-hour countdown for the Flash Deals banner.
+///
+/// The timer is aligned to local two-hour windows (00:00–02:00, 02:00–04:00,
+/// and so on), so every customer sees the same end time. It automatically
+/// begins the next cycle and resynchronizes when the app returns from the
+/// background.
+class _FlashDealsCountdown extends StatefulWidget {
+  const _FlashDealsCountdown();
+
+  @override
+  State<_FlashDealsCountdown> createState() =>
+      _FlashDealsCountdownState();
+}
+
+class _FlashDealsCountdownState extends State<_FlashDealsCountdown>
+    with WidgetsBindingObserver {
+  static const Duration _cycleDuration = Duration(hours: 2);
+  static const Color _countdownTextColor = Color(0xFF0B1F3A);
+
+  Timer? _ticker;
+  int _remainingSeconds = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _syncCountdown();
+    _startTicker();
+  }
+
+  void _startTicker() {
+    _ticker?.cancel();
+    _ticker = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _syncCountdown(),
+    );
+  }
+
+  int _calculateRemainingSeconds() {
+    final now = DateTime.now();
+    final secondsSinceMidnight =
+        (now.hour * 3600) + (now.minute * 60) + now.second;
+    final cycleSeconds = _cycleDuration.inSeconds;
+    final elapsedInCurrentCycle = secondsSinceMidnight % cycleSeconds;
+
+    // At the exact boundary, immediately begin the next full cycle.
+    return cycleSeconds - elapsedInCurrentCycle;
+  }
+
+  void _syncCountdown() {
+    final nextValue = _calculateRemainingSeconds();
+
+    if (!mounted || nextValue == _remainingSeconds) return;
+
+    setState(() {
+      _remainingSeconds = nextValue;
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Mobile operating systems may pause Dart timers in the background.
+      // Recreate and immediately resync the ticker when the app resumes.
+      _syncCountdown();
+      _startTicker();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hours = _remainingSeconds ~/ 3600;
+    final minutes = (_remainingSeconds % 3600) ~/ 60;
+    final seconds = _remainingSeconds % 60;
+
+    return Row(
+      children: [
+        const Text(
+          'ENDS IN  ',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 9,
+            vertical: 5,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            '${hours.toString().padLeft(2, '0')}:'
+            '${minutes.toString().padLeft(2, '0')}:'
+            '${seconds.toString().padLeft(2, '0')}',
+            style: const TextStyle(
+              color: _countdownTextColor,
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

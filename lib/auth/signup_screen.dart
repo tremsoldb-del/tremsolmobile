@@ -1,28 +1,30 @@
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tremsolapp/auth/VerifyEmailScreen.dart';
 
-
+import '../services/user_metadata_service.dart';
+import 'VerifyEmailScreen.dart';
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
 
   @override
-  _SignUpScreenState createState() => _SignUpScreenState();
+  State<SignUpScreen> createState() => _SignUpScreenState();
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
-  //final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final FocusNode _emailFocusNode = FocusNode();
 
-//added 1 5 2025
-  final _emailController = TextEditingController();
-  final _emailFocusNode = FocusNode();
   String? _emailError;
+  bool _isLoading = false;
+  bool _isPasswordVisible = false;
+  String _passwordStrength = '';
+  double _strengthValue = 0;
+  Color _strengthColor = Colors.grey;
 
   @override
   void initState() {
@@ -34,165 +36,161 @@ class _SignUpScreenState extends State<SignUpScreen> {
     });
   }
 
-  void _validateEmail(String value) {
-    if (value.isEmpty) {
-      setState(() => _emailError = 'Please enter your email');
-    } else if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
-      setState(() => _emailError = 'Please enter a valid email address');
-    } else {
-      setState(() => _emailError = null);
-    }
-  }
-
   @override
   void dispose() {
-    _emailFocusNode.dispose();
+    _nameController.dispose();
     _emailController.dispose();
+    _passwordController.dispose();
+    _emailFocusNode.dispose();
     super.dispose();
   }
 
-//added 1 5 2025
-  void signUpUser() async {
-    // Show loading indicator
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return const Center(
-          child: CircularProgressIndicator(),
-        );
-      },
-    );
+  bool _validateEmail(String value) {
+    final email = value.trim();
+    String? error;
 
-    try {
-      // Step 1: Create user with email and password
-      UserCredential userCredential =
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
+    if (email.isEmpty) {
+      error = 'Please enter your email';
+    } else if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+      error = 'Please enter a valid email address';
+    }
+
+    if (mounted) {
+      setState(() => _emailError = error);
+    }
+
+    return error == null;
+  }
+
+  void _showMessage(String message, {bool isError = true}) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError ? Colors.red : Colors.green,
+        ),
       );
+  }
 
-      // Step 2: Get default profile picture URL from 'profpic' collection
-      DocumentSnapshot profPicSnapshot = await FirebaseFirestore.instance
+  Future<String> _loadDefaultProfilePicture() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
           .collection('profpic')
           .limit(1)
-          .get()
-          .then((snap) => snap.docs.first);
+          .get();
 
-      String defaultProfilePicUrl = '';
-      try {
-        final qs = await FirebaseFirestore.instance
-            .collection('profpic')
-            .limit(1)
-            .get();
-        if (qs.docs.isNotEmpty) {
-          final data = qs.docs.first.data();
-          defaultProfilePicUrl = (data['default_pic'] ?? '').toString();
-        }
-      } catch (_) {
-        defaultProfilePicUrl = '';
+      if (snapshot.docs.isEmpty) return '';
+      return (snapshot.docs.first.data()['default_pic'] ?? '').toString().trim();
+    } catch (error) {
+      debugPrint('Unable to load the default profile picture: $error');
+      return '';
+    }
+  }
+
+  Future<void> signUpUser() async {
+    FocusScope.of(context).unfocus();
+
+    final fullName = _nameController.text.trim();
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+
+    if (fullName.isEmpty) {
+      _showMessage('Please enter your full name.');
+      return;
+    }
+
+    if (!_validateEmail(email)) return;
+
+    if (password.length < 6) {
+      _showMessage('Password must be at least 6 characters.');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final userCredential =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      final user = userCredential.user;
+      if (user == null) {
+        throw FirebaseAuthException(
+          code: 'null-user',
+          message: 'The account was created without a user record.',
+        );
       }
 
-      // Step 3: Save user details to Firestore with the fetched profile picture
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userCredential.user!.uid)
-          .set({
-        'fullname': _nameController.text.trim(),
-        'email': _emailController.text.trim(),
-        //'password': _passwordController.text.trim(),
-        'uid': userCredential.user!.uid,
-        'isWebuser': false,
-        'timestamp': Timestamp.now(),
-        'role': 1,
-        'profilepic': defaultProfilePicUrl,
-        "country": "",
-        "isActive": true,
-        "lastOnline": Timestamp.now(),
-        //added 28 09 2025
-        'ordersCount': 0,
-        'firstOrderAt': null,
-        'lastOrderAt': null,
-        'codFailureCount': 0,
-        'codSuspended': false,
-        'codPhoneVerified': false,
-        'codVerifiedPhone': '',
-        'createdAt': Timestamp.now(),
-        'region': ''
-      });
+      final defaultProfilePicUrl = await _loadDefaultProfilePicture();
 
-//added 02 10 2025
-// Step 4: Save FCM token to Firestore
-final fcmToken = await FirebaseMessaging.instance.getToken();
-if (fcmToken != null) {
-  await FirebaseFirestore.instance
-      .collection('users')
-      .doc(userCredential.user!.uid)
-      .update({'fcmToken': fcmToken});
-}
+      // Store Tremsol account defaults plus the complete signup app/device,
+      // locale, IP-location, and notification metadata snapshot.
+      await UserMetadataService.instance.syncCurrentUser(
+        fullName: fullName,
+        username: email.split('@').first,
+        profilePic: defaultProfilePicUrl,
+        captureSignupSnapshot: true,
+        awaitNetworkMetadata: true,
+      );
 
-
-      // Dismiss the loading indicator
-      Navigator.of(context).pop();
-
-      // Navigate to the home screen
-      //replaced 1 05 2024
-
-      // Send email verification
-      await userCredential.user!.sendEmailVerification();
+      await user.sendEmailVerification();
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('pendingEmailVerification', true);
 
-// Navigate to the email verification screen
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const VerifyEmailScreen()),
+        MaterialPageRoute(builder: (_) => const VerifyEmailScreen()),
       );
-    } catch (e) {
-      // Dismiss the loading indicator
-      Navigator.of(context).pop();
+    } on FirebaseAuthException catch (error) {
+      String errorMessage;
 
-      String errorMessage = "Something went wrong. Please try again.";
-
-      if (e is FirebaseAuthException) {
-        switch (e.code) {
-          case 'email-already-in-use':
-            errorMessage =
-                "An account with this email already exists. Try logging in instead.";
-            break;
-          case 'invalid-email':
-            errorMessage =
-                "The email address you entered is not valid. Please check and try again.";
-            break;
-          case 'weak-password':
-            errorMessage =
-                "Your password is too weak. Please choose a stronger one.";
-            break;
-          case 'operation-not-allowed':
-            errorMessage =
-                "Email/password accounts are not enabled. Contact support.";
-            break;
-          default:
-            // errorMessage = "Error: ${e.message}";
-            errorMessage = "Oops! Something went wrong. Please try again later";
-            break;
-        }
-      } else {
-        debugPrint("Non-auth error during sign up: $e");
+      switch (error.code) {
+        case 'email-already-in-use':
+          errorMessage =
+              'An account with this email already exists. Try logging in instead.';
+          break;
+        case 'invalid-email':
+          errorMessage =
+              'The email address you entered is not valid. Please check and try again.';
+          break;
+        case 'weak-password':
+          errorMessage =
+              'Your password is too weak. Please choose a stronger one.';
+          break;
+        case 'operation-not-allowed':
+          errorMessage =
+              'Email/password accounts are not enabled. Contact support.';
+          break;
+        case 'network-request-failed':
+          errorMessage =
+              'Network error. Please check your connection and try again.';
+          break;
+        case 'too-many-requests':
+          errorMessage =
+              'Too many attempts. Please wait briefly and try again.';
+          break;
+        default:
+          errorMessage = 'Sign up failed. Please try again.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(errorMessage),
-        backgroundColor: Colors.red,
-      ));
+      _showMessage(errorMessage);
+    } catch (error, stackTrace) {
+      debugPrint('Non-auth error during sign up: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _showMessage('Something went wrong. Please try again.');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
-
-  bool _isPasswordVisible = false;
-  String _passwordStrength = "";
-  double _strengthValue = 0;
-  Color _strengthColor = Colors.grey;
 
   void _checkPasswordStrength(String password) {
     String strength;
@@ -200,24 +198,24 @@ if (fcmToken != null) {
     Color color;
 
     if (password.isEmpty) {
-      strength = "";
+      strength = '';
       value = 0;
       color = Colors.grey;
     } else if (password.length < 6) {
-      strength = "Too short";
+      strength = 'Too short';
       value = 0.2;
       color = Colors.red;
     } else if (password.length < 8) {
-      strength = "Weak";
+      strength = 'Weak';
       value = 0.4;
       color = Colors.orange;
     } else if (!RegExp(r'(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])')
         .hasMatch(password)) {
-      strength = "Medium";
+      strength = 'Medium';
       value = 0.7;
       color = Colors.yellow[800]!;
     } else {
-      strength = "Strong";
+      strength = 'Strong';
       value = 1.0;
       color = Colors.green;
     }
@@ -229,8 +227,6 @@ if (fcmToken != null) {
     });
   }
 
-  //==================
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -241,16 +237,15 @@ if (fcmToken != null) {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(height: 40), // Spacing at the top
-              // Logo
+              const SizedBox(height: 40),
               Image.asset(
-                'assets/logo.jpg', // Path to the logo file in the assets folder
-                height: 80, // Adjust the height of the logo
+                'assets/logo.jpg',
+                height: 80,
                 fit: BoxFit.contain,
               ),
-              const SizedBox(height: 100), // Spacing after the logo
+              const SizedBox(height: 100),
               const Text(
-                "Create your account",
+                'Create your account',
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
@@ -258,16 +253,19 @@ if (fcmToken != null) {
               ),
               const SizedBox(height: 8),
               const Text(
-                "Fill in the details below",
+                'Fill in the details below',
                 style: TextStyle(
                   fontSize: 16,
                   color: Colors.grey,
                 ),
               ),
               const SizedBox(height: 16),
-              // Full Name TextField
               TextField(
                 controller: _nameController,
+                enabled: !_isLoading,
+                textInputAction: TextInputAction.next,
+                textCapitalization: TextCapitalization.words,
+                autofillHints: const [AutofillHints.name],
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.person),
                   hintText: 'Full Name',
@@ -277,10 +275,18 @@ if (fcmToken != null) {
                 ),
               ),
               const SizedBox(height: 16),
-              // Email TextField
               TextField(
                 controller: _emailController,
                 focusNode: _emailFocusNode,
+                enabled: !_isLoading,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                autofillHints: const [AutofillHints.email],
+                onChanged: (_) {
+                  if (_emailError != null) {
+                    _validateEmail(_emailController.text);
+                  }
+                },
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.email),
                   hintText: 'Email',
@@ -290,14 +296,15 @@ if (fcmToken != null) {
                   ),
                 ),
               ),
-
               const SizedBox(height: 16),
-
-// Inside the build method
               TextField(
                 controller: _passwordController,
+                enabled: !_isLoading,
                 obscureText: !_isPasswordVisible,
+                textInputAction: TextInputAction.done,
+                autofillHints: const [AutofillHints.newPassword],
                 onChanged: _checkPasswordStrength,
+                onSubmitted: (_) => _isLoading ? null : signUpUser(),
                 decoration: InputDecoration(
                   prefixIcon: const Icon(Icons.lock),
                   suffixIcon: IconButton(
@@ -307,11 +314,13 @@ if (fcmToken != null) {
                           : Icons.visibility_off,
                       color: Colors.grey,
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _isPasswordVisible = !_isPasswordVisible;
-                      });
-                    },
+                    onPressed: _isLoading
+                        ? null
+                        : () {
+                            setState(() {
+                              _isPasswordVisible = !_isPasswordVisible;
+                            });
+                          },
                   ),
                   hintText: 'Password',
                   border: OutlineInputBorder(
@@ -323,8 +332,10 @@ if (fcmToken != null) {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Text("Strength: ",
-                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const Text(
+                      'Strength: ',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
                     Text(
                       _passwordStrength,
                       style: TextStyle(
@@ -343,40 +354,41 @@ if (fcmToken != null) {
                 ),
               ],
               const SizedBox(height: 24),
-              // const SizedBox(height: 16),
-              // Sign Up Button
               SizedBox(
-                width: double.infinity, // Full width like the TextField
+                width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: signUpUser,
+                  onPressed: _isLoading ? null : signUpUser,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF002A5C),
-                    minimumSize:
-                        const Size.fromHeight(48), // Standard button height
+                    minimumSize: const Size.fromHeight(48),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
                   ),
-                  child: const Text(
-                    "Sign Up",
-                    style: TextStyle(fontSize: 16, color: Colors.white),
-                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          'Sign Up',
+                          style: TextStyle(fontSize: 16, color: Colors.white),
+                        ),
                 ),
               ),
-
               const SizedBox(height: 16),
-              // Already have an account Row
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text("Already have an account? "),
+                  const Text('Already have an account? '),
                   GestureDetector(
-                    onTap: () {
-                      Navigator.pop(
-                          context); // Navigate back to the Sign In screen
-                    },
+                    onTap: _isLoading ? null : () => Navigator.pop(context),
                     child: const Text(
-                      "Sign In",
+                      'Sign In',
                       style: TextStyle(
                         color: Color.fromRGBO(234, 73, 42, 1.0),
                       ),

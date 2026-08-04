@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 import 'package:pay_with_paystack/pay_with_paystack.dart';
@@ -49,7 +52,12 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
   String? currencySymbol;
   double? exchangeRate;
 
-  late final Future<_PaymentConfiguration> _configurationFuture;
+  late Future<_PaymentConfiguration> _configurationFuture;
+  late final InternetConnectionChecker _connectionChecker;
+  StreamSubscription<InternetConnectionStatus>? _internetStatusSubscription;
+
+  bool? _hasInternetConnection;
+  bool _isReloadingConfiguration = false;
 
   double get _baseTotal => widget.totalAmount + widget.shippingFee;
 
@@ -60,14 +68,136 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
   @override
   void initState() {
     super.initState();
+    _connectionChecker = InternetConnectionChecker.createInstance();
     _configurationFuture = _loadPaymentConfiguration();
     _loadCurrencyData();
+    _startInternetMonitoring();
   }
 
   @override
   void dispose() {
+    _internetStatusSubscription?.cancel();
     _deliveryPhoneController.dispose();
     super.dispose();
+  }
+
+  void _startInternetMonitoring() {
+    _checkInitialInternetStatus();
+
+    _internetStatusSubscription =
+        _connectionChecker.onStatusChange.listen((status) {
+      final isConnected = status == InternetConnectionStatus.connected;
+      final connectionWasLost = _hasInternetConnection == false;
+
+      if (mounted) {
+        setState(() => _hasInternetConnection = isConnected);
+      }
+
+      // If the page previously failed while offline, reload automatically as
+      // soon as a real internet connection becomes available again.
+      if (isConnected && connectionWasLost && mounted) {
+        _reloadPaymentConfiguration();
+      }
+    });
+  }
+
+  Future<void> _checkInitialInternetStatus() async {
+    final hasInternet = await _checkInternetConnection(updateState: false);
+    if (!mounted) return;
+    setState(() => _hasInternetConnection = hasInternet);
+  }
+
+  Future<bool> _checkInternetConnection({bool updateState = true}) async {
+    bool hasInternet;
+    try {
+      hasInternet = await _connectionChecker.hasConnection.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => false,
+      );
+    } catch (_) {
+      hasInternet = false;
+    }
+
+    if (updateState && mounted && _hasInternetConnection != hasInternet) {
+      setState(() => _hasInternetConnection = hasInternet);
+    }
+    return hasInternet;
+  }
+
+  Future<void> _reloadPaymentConfiguration() async {
+    if (_isReloadingConfiguration || !mounted) return;
+
+    final nextFuture = _loadPaymentConfiguration();
+    setState(() {
+      _isReloadingConfiguration = true;
+      _configurationFuture = nextFuture;
+    });
+
+    try {
+      await nextFuture;
+    } catch (_) {
+      // FutureBuilder displays the friendly error state below.
+    } finally {
+      if (mounted) {
+        setState(() => _isReloadingConfiguration = false);
+      }
+    }
+  }
+
+  Future<T> _retryTransient<T>(
+    Future<T> Function() operation, {
+    int maximumAttempts = 3,
+  }) async {
+    Object? lastError;
+    StackTrace? lastStackTrace;
+
+    for (var attempt = 0; attempt < maximumAttempts; attempt++) {
+      try {
+        return await operation();
+      } catch (error, stackTrace) {
+        lastError = error;
+        lastStackTrace = stackTrace;
+
+        final canRetry = _isRetryableError(error);
+        final isLastAttempt = attempt == maximumAttempts - 1;
+        if (!canRetry || isLastAttempt) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+
+        final delayMilliseconds = 650 * (1 << attempt);
+        await Future<void>.delayed(
+          Duration(milliseconds: delayMilliseconds),
+        );
+      }
+    }
+
+    Error.throwWithStackTrace(
+      lastError ?? StateError('The request could not be completed.'),
+      lastStackTrace ?? StackTrace.current,
+    );
+  }
+
+  bool _isRetryableError(Object? error) {
+    if (error is TimeoutException) return true;
+    if (error is FirebaseException) {
+      return const {
+        'unavailable',
+        'deadline-exceeded',
+        'aborted',
+        'internal',
+        'unknown',
+      }.contains(error.code);
+    }
+    return false;
+  }
+
+  bool _isOfflineLikeError(Object? error) {
+    if (error is _PaymentConfigurationException) return error.isOffline;
+    if (error is TimeoutException) return _hasInternetConnection == false;
+    if (error is FirebaseException) {
+      return error.code == 'unavailable' && _hasInternetConnection == false;
+    }
+    return _hasInternetConnection == false;
   }
 
   Future<void> _loadCurrencyData() async {
@@ -90,29 +220,101 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
       throw StateError('You need to be signed in to continue.');
     }
 
-    final allowedRegionsFuture = FirebaseFirestore.instance
+    final hasInternet = await _checkInternetConnection();
+
+    if (!hasInternet) {
+      try {
+        return await _readPaymentConfiguration(
+          user: user,
+          cacheOnly: true,
+        );
+      } catch (error) {
+        debugPrint('[PaymentOptions] Offline cache unavailable: $error');
+        throw const _PaymentConfigurationException(
+          message:
+              'Payment options cannot be loaded while you are offline. '
+              'Reconnect to the internet and try again.',
+          isOffline: true,
+        );
+      }
+    }
+
+    try {
+      return await _retryTransient(
+        () => _readPaymentConfiguration(user: user, cacheOnly: false),
+      );
+    } catch (error) {
+      debugPrint('[PaymentOptions] Online configuration load failed: $error');
+
+      // Firestore keeps the last successfully downloaded documents locally.
+      // Use that trusted cache when the live service is temporarily
+      // unreachable, instead of showing a raw Firebase exception.
+      try {
+        return await _readPaymentConfiguration(
+          user: user,
+          cacheOnly: true,
+        );
+      } catch (cacheError) {
+        debugPrint('[PaymentOptions] Cached configuration load failed: '
+            '$cacheError');
+      }
+
+      if (_isRetryableError(error)) {
+        throw const _PaymentConfigurationException(
+          message:
+              'Payment methods are temporarily unavailable. Please try again.',
+          isOffline: false,
+        );
+      }
+
+      Error.throwWithStackTrace(error, StackTrace.current);
+    }
+  }
+
+  Future<_PaymentConfiguration> _readPaymentConfiguration({
+    required User user,
+    required bool cacheOnly,
+  }) async {
+    const cacheOptions = GetOptions(source: Source.cache);
+
+    final allowedRegionsRef = FirebaseFirestore.instance
         .collection('cod')
-        .doc('allowedRegions')
-        .get();
-    final protectedSettingsFuture = FirebaseFirestore.instance
+        .doc('allowedRegions');
+    final protectedSettingsRef = FirebaseFirestore.instance
         .collection('cod')
-        .doc('protectedSettings')
-        .get();
-    final userFuture = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get();
-    final defaultAddressFuture = FirebaseFirestore.instance
+        .doc('protectedSettings');
+    final userRef =
+        FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final defaultAddressQuery = FirebaseFirestore.instance
         .collection('shippingaddress')
         .where('uid', isEqualTo: user.uid)
         .where('isDefault', isEqualTo: true)
-        .limit(1)
-        .get();
+        .limit(1);
 
-    final allowedRegionsDoc = await allowedRegionsFuture;
-    final protectedSettingsDoc = await protectedSettingsFuture;
-    final userDoc = await userFuture;
-    final defaultAddress = await defaultAddressFuture;
+    Future<dynamic> readDocument(
+      DocumentReference<Map<String, dynamic>> reference,
+    ) {
+      return cacheOnly ? reference.get(cacheOptions) : reference.get();
+    }
+
+    Future<dynamic> readQuery(Query<Map<String, dynamic>> query) {
+      return cacheOnly ? query.get(cacheOptions) : query.get();
+    }
+
+    final results = await Future.wait<dynamic>([
+      readDocument(allowedRegionsRef),
+      readDocument(protectedSettingsRef),
+      readDocument(userRef),
+      readQuery(defaultAddressQuery),
+    ]).timeout(const Duration(seconds: 15));
+
+    final allowedRegionsDoc =
+        results[0] as DocumentSnapshot<Map<String, dynamic>>;
+    final protectedSettingsDoc =
+        results[1] as DocumentSnapshot<Map<String, dynamic>>;
+    final userDoc = results[2] as DocumentSnapshot<Map<String, dynamic>>;
+    final defaultAddress =
+        results[3] as QuerySnapshot<Map<String, dynamic>>;
 
     final allowedData = allowedRegionsDoc.data() ?? <String, dynamic>{};
     final settings = protectedSettingsDoc.data() ?? <String, dynamic>{};
@@ -184,7 +386,8 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
         : (passedRegion.isNotEmpty ? passedRegion : 'your region');
 
     debugPrint(
-      '[PaymentOptions] currentRegionLabel=$currentRegionLabel '
+      '[PaymentOptions] source=${cacheOnly ? 'cache' : 'server/cache'} '
+      'currentRegionLabel=$currentRegionLabel '
       'currentRegionKeys=$currentRegionKeys '
       'allowedRegionKeys=$allowedRegionKeys '
       'protectedCodEnabled=${policy.enabled} '
@@ -249,17 +452,14 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
   }
 
   Future<Map<String, dynamic>> _loadPaystackSettings() async {
-    final settingsDoc = await FirebaseFirestore.instance
-        .collection('settings')
-        .doc('doc8')
-        .get()
-        .timeout(
-          const Duration(seconds: 15),
-          onTimeout: () => throw StateError(
-            'Payment settings are taking too long to load. Check your internet '
-            'connection and try again.',
-          ),
-        );
+    final settingsDoc = await _retryTransient(
+      () => FirebaseFirestore.instance
+          .collection('settings')
+          .doc('doc8')
+          .get()
+          .timeout(const Duration(seconds: 15)),
+      maximumAttempts: 2,
+    );
     final data = settingsDoc.data();
 
     final secretKey = data?['paystack_key']?.toString().trim() ?? '';
@@ -300,6 +500,21 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
       return;
     }
 
+    final hasInternet = await _checkInternetConnection();
+    if (!hasInternet) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'You are offline. Reconnect to the internet before making payment.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
     setState(() => _isProcessing = true);
 
     try {
@@ -331,10 +546,30 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
   }
 
   String _friendlyError(Object error) {
+    if (error is _PaymentConfigurationException) {
+      return error.message;
+    }
+    if (error is TimeoutException) {
+      return 'The request took too long. Check your internet connection and '
+          'try again.';
+    }
+    if (error is FirebaseException) {
+      if (error.code == 'unavailable' ||
+          error.code == 'deadline-exceeded') {
+        return 'The service could not be reached. Check your internet '
+            'connection and try again.';
+      }
+      if (error.code == 'permission-denied') {
+        return 'You do not have permission to complete this request.';
+      }
+      return 'The request could not be completed. Please try again.';
+    }
+
     final message = error.toString().replaceFirst('Bad state: ', '');
-    return message.startsWith('Exception: ')
-        ? message.replaceFirst('Exception: ', '')
-        : message;
+    if (message.startsWith('Exception: ')) {
+      return message.replaceFirst('Exception: ', '');
+    }
+    return message;
   }
 
   Future<void> _processFullPaystackPayment() async {
@@ -1067,16 +1302,19 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
           }
 
           if (snapshot.hasError || !snapshot.hasData) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  snapshot.error == null
-                      ? 'Unable to load payment options.'
-                      : _friendlyError(snapshot.error!),
-                  textAlign: TextAlign.center,
-                ),
-              ),
+            final isOffline = _isOfflineLikeError(snapshot.error);
+            return _PaymentConfigurationErrorView(
+              isOffline: isOffline,
+              isRetrying: _isReloadingConfiguration,
+              message: isOffline
+                  ? 'Payment options cannot be loaded while you are offline. '
+                      'Reconnect to the internet and try again.'
+                  : (snapshot.error == null
+                      ? 'Payment methods could not be loaded. Please try again.'
+                      : _friendlyError(snapshot.error!)),
+              onRetry: () {
+                _reloadPaymentConfiguration();
+              },
             );
           }
 
@@ -1252,6 +1490,124 @@ class _PaymentOptionsPageState extends State<PaymentOptionsPage> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _PaymentConfigurationException implements Exception {
+  final String message;
+  final bool isOffline;
+
+  const _PaymentConfigurationException({
+    required this.message,
+    required this.isOffline,
+  });
+
+  @override
+  String toString() => message;
+}
+
+class _PaymentConfigurationErrorView extends StatelessWidget {
+  final bool isOffline;
+  final bool isRetrying;
+  final String message;
+  final VoidCallback onRetry;
+
+  const _PaymentConfigurationErrorView({
+    required this.isOffline,
+    required this.isRetrying,
+    required this.message,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 430),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 86,
+                  height: 86,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F1FB),
+                    borderRadius: BorderRadius.circular(43),
+                  ),
+                  child: Icon(
+                    isOffline
+                        ? Icons.wifi_off_rounded
+                        : Icons.cloud_off_rounded,
+                    size: 44,
+                    color: const Color(0xFF002A5C),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  isOffline
+                      ? "You're offline"
+                      : 'Unable to load payment methods',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1D2733),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    height: 1.5,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: isRetrying ? null : onRetry,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(180, 50),
+                    backgroundColor: const Color(0xFF002A5C),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  icon: isRetrying
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                  label: Text(isRetrying ? 'Checking...' : 'Try Again'),
+                ),
+                if (isOffline) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    'The page will also reload automatically when your '
+                    'connection returns.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
