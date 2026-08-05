@@ -516,11 +516,21 @@ try {
 }*/
 
   void _showAdModal(Map<String, dynamic> ad) {
-    showDialog(
+    final String productId = (ad['productId'] ??
+            ad['productID'] ??
+            ad['product_id'] ??
+            '')
+        .toString()
+        .trim();
+
+    final bool isClickable = productId.isNotEmpty;
+    final BuildContext pageContext = context;
+
+    showDialog<void>(
       context: context,
       barrierDismissible: true,
       barrierColor: Colors.black.withOpacity(0.72),
-      builder: (context) {
+      builder: (dialogContext) {
         return Dialog(
           insetPadding: const EdgeInsets.symmetric(horizontal: 24),
           backgroundColor: Colors.transparent,
@@ -528,35 +538,64 @@ try {
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
+              Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(24),
+                child: InkWell(
+                  onTap: isClickable
+                      ? () {
+                          Navigator.of(dialogContext).pop();
+
+                          Future.microtask(() {
+                            if (!mounted) return;
+
+                            Navigator.of(pageContext).push(
+                              MaterialPageRoute(
+                                builder: (_) => ProductDetailsScreen(
+                                  productId: productId,
+                                ),
+                              ),
+                            );
+                          });
+                        }
+                      : null,
                   borderRadius: BorderRadius.circular(24),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.24),
-                      blurRadius: 34,
-                      offset: const Offset(0, 16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.24),
+                          blurRadius: 34,
+                          offset: const Offset(0, 16),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: ad['image'] != null
-                      ? CachedNetworkImage(
-                          imageUrl: ad['image'],
-                          fit: BoxFit.contain,
-                          width: double.infinity,
-                          height: MediaQuery.of(context).size.height * 0.52,
-                          placeholder: (context, url) => _premiumLoader(
-                            height: MediaQuery.of(context).size.height * 0.52,
-                          ),
-                          errorWidget: (context, url, error) =>
-                              _networkImageFallback(iconSize: 50),
-                        )
-                      : _networkImageFallback(iconSize: 50),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: ad['image'] != null &&
+                              ad['image'].toString().trim().isNotEmpty
+                          ? CachedNetworkImage(
+                              imageUrl: ad['image'].toString().trim(),
+                              fit: BoxFit.contain,
+                              width: double.infinity,
+                              height:
+                                  MediaQuery.of(dialogContext).size.height *
+                                      0.52,
+                              placeholder: (context, url) => _premiumLoader(
+                                height:
+                                    MediaQuery.of(dialogContext).size.height *
+                                        0.52,
+                              ),
+                              errorWidget: (context, url, error) =>
+                                  _networkImageFallback(iconSize: 50),
+                            )
+                          : _networkImageFallback(iconSize: 50),
+                    ),
+                  ),
                 ),
               ),
               Positioned(
@@ -567,13 +606,16 @@ try {
                   shape: const CircleBorder(),
                   elevation: 8,
                   child: InkWell(
-                    onTap: () => Navigator.of(context).pop(),
+                    onTap: () => Navigator.of(dialogContext).pop(),
                     customBorder: const CircleBorder(),
                     child: const SizedBox(
                       width: 42,
                       height: 42,
-                      child: Icon(Icons.close_rounded,
-                          color: Colors.white, size: 22),
+                      child: Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
                   ),
                 ),
