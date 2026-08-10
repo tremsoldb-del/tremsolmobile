@@ -3,9 +3,12 @@ description: "A new Flutter project."
 
 publish_to: "none"
 
-version: 1.0.13+15
 
-#version: 1.0.12+14
+#apple last
+#version: 1.0.13+15
+
+#android last
+version: 1.0.12+15
 
 environment:
   sdk: ^3.5.3
