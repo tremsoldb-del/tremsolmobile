@@ -1741,7 +1741,12 @@ class _ProductMediaWidgetState extends State<ProductMediaWidget> {
                   widget.videoUrl!.isNotEmpty) {
                 return SizedBox(
                   height: screenHeight * 0.53,
-                  child: VideoWidget(videoUrl: widget.videoUrl!),
+                  child: VideoWidget(
+                    videoUrl: widget.videoUrl!,
+                    posterUrl: (widget.images != null && widget.images!.isNotEmpty)
+                        ? widget.images!.first.toString()
+                        : null,
+                  ),
                 );
               } else {
                 final imageIndex = index -

@@ -41,6 +41,88 @@ class ShopScreen extends StatefulWidget {
 class _ShopScreenState extends State<ShopScreen> {
   int _reloadToken = 0;
 
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _cachedCategories =
+      <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+  bool _categoriesLoading = true;
+  Object? _categoriesError;
+
+  Query<Map<String, dynamic>> get _categoryQuery => FirebaseFirestore.instance
+      .collection('prdcategory')
+      .where('isPublish', isEqualTo: true)
+      .orderBy('createdAt', descending: true)
+      .limit(12);
+
+  Future<void> _loadCategoriesCacheFirst() async {
+    QuerySnapshot<Map<String, dynamic>>? cachedSnapshot;
+
+    try {
+      cachedSnapshot = await _categoryQuery.get(
+        const GetOptions(source: Source.cache),
+      );
+
+      if (mounted && cachedSnapshot.docs.isNotEmpty) {
+        setState(() {
+          _cachedCategories = cachedSnapshot!.docs;
+          _categoriesLoading = false;
+          _categoriesError = null;
+        });
+        _precacheCategoryImages(cachedSnapshot.docs);
+      }
+    } catch (error) {
+      debugPrint('[Categories] Cache read unavailable: $error');
+    }
+
+    try {
+      final serverSnapshot = await _categoryQuery.get(
+        const GetOptions(source: Source.server),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _cachedCategories = serverSnapshot.docs;
+        _categoriesLoading = false;
+        _categoriesError = null;
+      });
+      _precacheCategoryImages(serverSnapshot.docs);
+    } catch (error) {
+      debugPrint('[Categories] Server refresh failed: $error');
+      if (!mounted) return;
+
+      // Keep showing cached categories when the network is unavailable.
+      if (_cachedCategories.isEmpty &&
+          (cachedSnapshot == null || cachedSnapshot.docs.isEmpty)) {
+        setState(() {
+          _categoriesLoading = false;
+          _categoriesError = error;
+        });
+      }
+    }
+  }
+
+  void _retryCategories() {
+    setState(() {
+      _categoriesLoading = _cachedCategories.isEmpty;
+      _categoriesError = null;
+    });
+    _loadCategoriesCacheFirst();
+  }
+
+  void _precacheCategoryImages(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final doc in docs) {
+        final imageUrl = (doc.data()['image'] ?? '').toString().trim();
+        if (imageUrl.isEmpty) continue;
+        precacheImage(
+          CachedNetworkImageProvider(imageUrl),
+          context,
+        ).catchError((_) {});
+      }
+    });
+  }
+
   static const Color _premiumNavy = Color(0xFF0B1F3A);
   static const Color _premiumNavyLight = Color(0xFF173B69);
   static const Color _premiumGold = Color(0xFFF2A900);
@@ -348,6 +430,9 @@ Future<void> _loadCurrencyData() async {
 void initState() {
   super.initState();
 
+  // Warm category metadata + images from Firestore/image cache first,
+  // then refresh them from the server without blocking the home screen.
+  _loadCategoriesCacheFirst();
 
   // Load currency ONCE
   _loadCurrencyData();
@@ -2236,70 +2321,61 @@ Stream<List<NotificationModel>> _getNotificationsStream() {
   }
 
   Widget _buildCategorySection(BuildContext context) {
-    return TimedStreamBuilder<QuerySnapshot>(
-      key: ValueKey('cat-$_reloadToken'),
-      stream: FirebaseFirestore.instance
-          .collection('prdcategory')
-          .where('isPublish', isEqualTo: true)
-          .orderBy('createdAt', descending: true)
-          .limit(12)
-          .snapshots(),
-      timeout: const Duration(seconds: 15),
-      onTimeout: (_) => FirestoreErrorCard(
-        error: Exception('timeout'),
-        onRetry: () => setState(() => _reloadToken++),
-      ),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return FirestoreErrorCard(
-            error: snapshot.error!,
-            onRetry: () => setState(() => _reloadToken++),
-          );
-        }
-        if (!snapshot.hasData) {
-          return _premiumLoader(height: 180);
-        }
+    if (_categoriesLoading && _cachedCategories.isEmpty) {
+      return _premiumLoader(height: 180);
+    }
 
-        final categories = snapshot.data!.docs;
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-          child: GridView.builder(
-            padding: EdgeInsets.zero,
-            primary: false,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              childAspectRatio: 0.90,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
+    if (_categoriesError != null && _cachedCategories.isEmpty) {
+      return FirestoreErrorCard(
+        error: _categoriesError!,
+        onRetry: _retryCategories,
+      );
+    }
+
+    final categories = _cachedCategories;
+    if (categories.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: GridView.builder(
+        padding: EdgeInsets.zero,
+        primary: false,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          childAspectRatio: 0.90,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+        ),
+        itemCount: categories.length,
+        itemBuilder: (context, index) {
+          final category = categories[index];
+          final data = category.data();
+          final categoryId = category.id;
+          final categoryName = (data['name'] ?? '').toString();
+          final imageUrl = (data['image'] ?? '').toString();
+
+          return GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => SubcategoryScreen(
+                  categoryId: categoryId,
+                  categoryName: categoryName,
+                ),
+              ),
             ),
-            itemCount: categories.length,
-            itemBuilder: (context, index) {
-              final category = categories[index];
-              final categoryId = category.id;
-              final categoryName = (category['name'] ?? '').toString();
-              final imageUrl = (category['image'] ?? '').toString();
-              return GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => SubcategoryScreen(
-                      categoryId: categoryId,
-                      categoryName: categoryName,
-                    ),
-                  ),
-                ),
-                child: _buildCategoryItem(
-                  context,
-                  categoryName,
-                  imageUrl,
-                ),
-              );
-            },
-          ),
-        );
-      },
+            child: _buildCategoryItem(
+              context,
+              categoryName,
+              imageUrl,
+            ),
+          );
+        },
+      ),
     );
   }
 

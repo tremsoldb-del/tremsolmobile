@@ -24,6 +24,8 @@ class _CartPageState extends State<CartPage> {
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _promoCodeController = TextEditingController();
+  final FocusNode _promoFocusNode = FocusNode();
+  final ValueNotifier<bool> _isApplyingPromo = ValueNotifier<bool>(false);
 
   String currencySymbol = 'GHS';
   double exchangeRate = 1.0;
@@ -33,7 +35,6 @@ class _CartPageState extends State<CartPage> {
   DocumentReference<Map<String, dynamic>>? _appliedPromoReference;
   double _discountAmount = 0.0;
   bool _isPromoApplied = false;
-  bool _isApplyingPromo = false;
 
   String _productLookupSignature = '';
   Future<Map<String, _CartProductState>>? _productLookupFuture;
@@ -46,6 +47,8 @@ class _CartPageState extends State<CartPage> {
 
   @override
   void dispose() {
+    _promoFocusNode.dispose();
+    _isApplyingPromo.dispose();
     _promoCodeController.dispose();
     super.dispose();
   }
@@ -198,20 +201,20 @@ class _CartPageState extends State<CartPage> {
               );
             }
 
-            if (productsSnapshot.connectionState == ConnectionState.waiting ||
-                !productsSnapshot.hasData) {
-              return _buildLoadingScaffold(
-                userId,
-                itemCount: cartDocs.length,
-              );
-            }
-
-            final productStates = productsSnapshot.data!;
-            final hasUnavailable = cartDocs.any((doc) {
-              final productId =
-                  (doc.data()['productId'] ?? '').toString().trim();
-              return !(productStates[productId]?.isAvailable ?? false);
-            });
+            // Do not block the entire cart on the secondary product lookup.
+            // Cart documents already contain the display data needed to paint
+            // the page. Product availability is verified in the background.
+            final isCheckingProducts =
+                productsSnapshot.connectionState == ConnectionState.waiting ||
+                    !productsSnapshot.hasData;
+            final productStates =
+                productsSnapshot.data ?? <String, _CartProductState>{};
+            final hasUnavailable = !isCheckingProducts &&
+                cartDocs.any((doc) {
+                  final productId =
+                      (doc.data()['productId'] ?? '').toString().trim();
+                  return !(productStates[productId]?.isAvailable ?? false);
+                });
 
             final totalAmount = cartDocs.fold<double>(0.0, (sum, document) {
               final value = document.data()['totalPrice'];
@@ -228,40 +231,55 @@ class _CartPageState extends State<CartPage> {
                 userId: userId,
                 itemCount: cartDocs.length,
               ),
-              body: RefreshIndicator(
-                onRefresh: () async {
-                  setState(() {
-                    _productLookupSignature = '';
-                    _productLookupFuture = null;
-                  });
-                  await _productLookupFor(cartDocs);
-                },
-                child: ListView.separated(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
-                  itemCount: cartDocs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (context, index) {
-                    final cartDocument = cartDocs[index];
-                    final productId = (cartDocument.data()['productId'] ?? '')
-                        .toString()
-                        .trim();
-                    final productState = productStates[productId] ??
-                        const _CartProductState.missing();
+              // Keep the cart footer inside the resizable body instead of
+              // bottomNavigationBar. On iOS the software keyboard can cover a
+              // Scaffold bottomNavigationBar; putting the footer in the body
+              // makes it move above the keyboard automatically.
+              body: Column(
+                children: [
+                  Expanded(
+                    child: RefreshIndicator(
+                      onRefresh: () async {
+                        setState(() {
+                          _productLookupSignature = '';
+                          _productLookupFuture = null;
+                        });
+                        await _productLookupFor(cartDocs);
+                      },
+                      child: ListView.separated(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+                        itemCount: cartDocs.length,
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final cartDocument = cartDocs[index];
+                          final productId =
+                              (cartDocument.data()['productId'] ?? '')
+                                  .toString()
+                                  .trim();
+                          final productState = productStates[productId] ??
+                              const _CartProductState.provisional();
 
-                    return _buildCartItem(
-                      cartDocument: cartDocument,
-                      productState: productState,
-                      userId: userId,
-                    );
-                  },
-                ),
-              ),
-              bottomNavigationBar: _buildCartFooter(
-                cartDocs: cartDocs,
-                totalAmount: totalAmount,
-                displayTotal: displayTotal,
-                hasUnavailable: hasUnavailable,
+                          return _buildCartItem(
+                            cartDocument: cartDocument,
+                            productState: productState,
+                            userId: userId,
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  _buildCartFooter(
+                    cartDocs: cartDocs,
+                    totalAmount: totalAmount,
+                    displayTotal: displayTotal,
+                    hasUnavailable: hasUnavailable,
+                    isCheckingProducts: isCheckingProducts,
+                  ),
+                ],
               ),
             );
           },
@@ -737,6 +755,7 @@ class _CartPageState extends State<CartPage> {
     required double totalAmount,
     required double displayTotal,
     required bool hasUnavailable,
+    required bool isCheckingProducts,
   }) {
     return SafeArea(
       top: false,
@@ -754,8 +773,14 @@ class _CartPageState extends State<CartPage> {
                   Expanded(
                     child: TextField(
                       controller: _promoCodeController,
-                      enabled: !_isApplyingPromo,
+                      focusNode: _promoFocusNode,
                       textCapitalization: TextCapitalization.characters,
+                      textInputAction: TextInputAction.done,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      // "Done" only closes the keyboard. Validation should
+                      // happen only when the user explicitly taps Apply.
+                      onSubmitted: (_) => _promoFocusNode.unfocus(),
                       decoration: InputDecoration(
                         hintText: 'Enter promo code',
                         isDense: true,
@@ -772,29 +797,36 @@ class _CartPageState extends State<CartPage> {
                   const SizedBox(width: 10),
                   SizedBox(
                     height: 48,
-                    child: ElevatedButton(
-                      onPressed: _isApplyingPromo
-                          ? null
-                          : () => _applyPromoFromFooter(
-                                totalAmount: totalAmount,
-                                cartDocs: cartDocs,
-                                hasUnavailable: hasUnavailable,
-                              ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFF4F1F7),
-                        foregroundColor: const Color(0xFF6B4FA1),
-                        elevation: 1,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(24),
-                        ),
-                      ),
-                      child: _isApplyingPromo
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('Apply'),
+                    child: ValueListenableBuilder<bool>(
+                      valueListenable: _isApplyingPromo,
+                      builder: (context, isApplying, _) {
+                        return ElevatedButton(
+                          onPressed: isApplying
+                              ? null
+                              : () => _applyPromoFromFooter(
+                                    totalAmount: totalAmount,
+                                    cartDocs: cartDocs,
+                                    hasUnavailable: hasUnavailable,
+                                  ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFF4F1F7),
+                            foregroundColor: const Color(0xFF6B4FA1),
+                            elevation: 1,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(24),
+                            ),
+                          ),
+                          child: isApplying
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Apply'),
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -821,7 +853,17 @@ class _CartPageState extends State<CartPage> {
                   color: Color(0xFFE53935),
                 ),
               ),
-              if (hasUnavailable) ...[
+              if (isCheckingProducts) ...[
+                const SizedBox(height: 6),
+                const Text(
+                  'Checking product availability…',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: Colors.grey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ] else if (hasUnavailable) ...[
                 const SizedBox(height: 6),
                 const Text(
                   'Remove unavailable items before continuing to checkout.',
@@ -836,7 +878,9 @@ class _CartPageState extends State<CartPage> {
               SizedBox(
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: hasUnavailable
+                  onPressed: isCheckingProducts
+                      ? null
+                      : hasUnavailable
                       ? () {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -859,16 +903,21 @@ class _CartPageState extends State<CartPage> {
                           );
                         },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: hasUnavailable ? Colors.grey : _orange,
+                    backgroundColor:
+                        (isCheckingProducts || hasUnavailable)
+                            ? Colors.grey
+                            : _orange,
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
                   child: Text(
-                    hasUnavailable
-                        ? 'Resolve unavailable items'
-                        : 'Checkout (${cartDocs.length})',
+                    isCheckingProducts
+                        ? 'Checking availability…'
+                        : hasUnavailable
+                            ? 'Resolve unavailable items'
+                            : 'Checkout (${cartDocs.length})',
                     style: const TextStyle(fontSize: 16.5),
                   ),
                 ),
@@ -1051,7 +1100,7 @@ class _CartPageState extends State<CartPage> {
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> cartDocs,
     required bool hasUnavailable,
   }) async {
-    FocusScope.of(context).unfocus();
+    if (_isApplyingPromo.value) return;
 
     if (hasUnavailable) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1070,18 +1119,29 @@ class _CartPageState extends State<CartPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a promo code first.')),
       );
+      _promoFocusNode.requestFocus();
       return;
     }
 
-    setState(() => _isApplyingPromo = true);
+    _isApplyingPromo.value = true;
     try {
-      await _validatePromoCode(
+      final applied = await _validatePromoCode(
         code: code,
         totalAmount: totalAmount,
         cartDocs: cartDocs,
       );
+
+      // Keep the field usable after an invalid code so the user can correct
+      // it immediately. Close the keyboard only after a successful apply.
+      if (applied) {
+        _promoFocusNode.unfocus();
+      } else if (mounted) {
+        _promoFocusNode.requestFocus();
+      }
     } finally {
-      if (mounted) setState(() => _isApplyingPromo = false);
+      if (mounted) {
+        _isApplyingPromo.value = false;
+      }
     }
   }
 
@@ -1307,6 +1367,14 @@ class _CartProductState {
     this.description,
     this.imageUrl,
   });
+
+  const _CartProductState.provisional()
+      : exists = true,
+        isPublished = true,
+        likes = const <String>{},
+        name = null,
+        description = null,
+        imageUrl = null;
 
   const _CartProductState.missing()
       : exists = false,
